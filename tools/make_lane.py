@@ -12,6 +12,9 @@ import sys
 sys.dont_write_bytecode=True
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from lane_pixels import surface, worked_material, flower, maps, linear
+from contextlib import contextmanager
+from functools import wraps
+from sight_owners import OwnerMap
 
 ROOT=Path(__file__).resolve().parents[1]
 ART=ROOT/'art/lane'; OUT=ROOT/'assets/lanes'
@@ -28,6 +31,49 @@ assert len(grid)==15 and all(len(row)==21 for row in grid)
 def glyph(x,z):
  return grid[z+7][x+10] if -10<=x<=10 and -7<=z<=7 else '#'
 def cv(p):return (p[0],-p[2],p[1])
+
+# Ownership belongs to authored objects, even when their faces share a material
+# batch. Physical primitives supply finite multipart bounds in game coordinates.
+site=OwnerMap(1,256)
+active_owner=0
+bound_depth=0
+@contextmanager
+def owning(name,cell=None):
+ global active_owner
+ previous=active_owner
+ active_owner=site.names.get(name) or site.add(name,cell=cell)
+ try:yield active_owner
+ finally:active_owner=previous
+def owned(name,cell=None):
+ def decorate(fn):
+  @wraps(fn)
+  def call(*args,**kwargs):
+   with owning(name(*args,**kwargs),cell(*args,**kwargs) if cell else None):
+    return fn(*args,**kwargs)
+  return call
+ return decorate
+def physical_bounds(points):
+ if not active_owner:return
+ low=[min(p[i] for p in points) for i in range(3)]
+ high=[max(p[i] for p in points) for i in range(3)]
+ # Sheets have physical thickness for robust finite-segment intersection.
+ for i in range(3):
+  if high[i]-low[i]<.002:
+   low[i]-=.001;high[i]+=.001
+ site.box(active_owner,low,high)
+def solid(fn):
+ @wraps(fn)
+ def call(self,*args,**kwargs):
+  global bound_depth
+  start=len(self.v);outer=bound_depth==0
+  bound_depth+=1
+  try:return fn(self,*args,**kwargs)
+  finally:
+   bound_depth-=1
+   if outer and active_owner and len(self.v)>start:
+    ox,oy,oz=self.origin
+    physical_bounds([(v[0]+ox,v[2]+oy,-v[1]+oz) for v in self.v[start:]])
+ return call
 
 M={}; SOURCE=[]
 master=bpy.data.images.load(str(ART/'town_materials_generated.png'))
@@ -158,9 +204,11 @@ sprite_material('FlowerCluster',flower())
 
 class Mesh:
  def __init__(self,name,mat,origin=(0,0,0)):
-  self.name=name;self.mat=mat;self.origin=Vector(origin);self.v=[];self.f=[];self.uv=[]
- def face(self,pts,uv=None):
+  self.name=name;self.mat=mat;self.origin=Vector(origin);self.v=[];self.f=[];self.uv=[];self.owners=[]
+ def face(self,pts,uv=None,bound=True):
   k=len(self.v);self.v.extend(cv(Vector(p)-self.origin) for p in pts);self.f.append(tuple(range(k,k+len(pts))))
+  self.owners.append(active_owner)
+  if bound and not bound_depth:physical_bounds(pts)
   if uv is None:
    if self.mat in ('Stone','Masonry','CanalMasonry','Plaster','WorkshopLime'):
     # Courses carry around an actual pier, including cut ends of small stones.
@@ -173,11 +221,13 @@ class Mesh:
     h=(Vector(pts[-1])-a).length
     uv=[(0,0),(w,0),(w,h),(0,h)] if len(pts)==4 else [(0,0),(w,0),(w*.5,h)]
   self.uv.append(uv)
+ @solid
  def box(self,c,s):
   x,y,z=c;a,b,d=[v*.5 for v in s]
   p=[(x+u*a,y+v*b,z+w*d) for u,v,w in [(-1,-1,-1),(1,-1,-1),(1,-1,1),(-1,-1,1),(-1,1,-1),(1,1,-1),(1,1,1),(-1,1,1)]]
   for ids in [(0,3,2,1),(4,5,6,7),(0,1,5,4),(1,2,6,5),(2,3,7,6),(3,0,4,7)]:
    self.face([p[i] for i in reversed(ids)])
+ @solid
  def beam(self,a,b,r1,r2=None,n=8):
   a,b=Vector(a),Vector(b);d=(b-a).normalized();u=d.cross(Vector((0,1,0)))
   if u.length<.01:u=d.cross(Vector((1,0,0)))
@@ -185,6 +235,7 @@ class Mesh:
   rings=[[p+(u*math.cos(i*math.tau/n)+v*math.sin(i*math.tau/n))*r for i in range(n)] for p,r in [(a,r1),(b,r2)]]
   for i in range(n):self.face([rings[0][i],rings[0][(i+1)%n],rings[1][(i+1)%n],rings[1][i]])
   self.face(list(reversed(rings[0])),[(.5,.5)]*n);self.face(rings[1],[(.5,.5)]*n)
+ @solid
  def stone(self,c,s):
   x,y,z=c;a,b,d=[v/2 for v in s]
   shape=[(-.80,-1),(.76,-1),(1,-.68),(1,.72),(.71,1),(-.73,1),(-1,.69),(-1,-.7)]
@@ -198,9 +249,22 @@ class Mesh:
   layer=me.uv_layers.new(name='MaterialMetres')
   for poly,uv in zip(me.polygons,self.uv):
    for li,co in zip(poly.loop_indices,uv):layer.data[li].uv=co
+  site.uv(me,self.owners)
   ob=bpy.data.objects.new(self.name,me);bpy.context.collection.objects.link(ob);ob.location=cv(self.origin)
   return ob
 def lathe(mesh,c,profile,n=20):
+ global bound_depth
+ # Small closed market vessels and fruit are one solid. Fountain rings retain
+ # their individual sectors so the open basin is not filled by a broad box.
+ whole=mesh.name not in ('Fountain_Basin','Fountain_CarvedRim')
+ if whole:
+  radius=max(r for _,r in profile);lo=min(y for y,_ in profile);hi=max(y for y,_ in profile)
+  physical_bounds([(c[0]-radius,c[1]+lo,c[2]-radius),(c[0]+radius,c[1]+hi,c[2]+radius)])
+  bound_depth+=1
+ try:lathe_faces(mesh,c,profile,n)
+ finally:
+  if whole:bound_depth-=1
+def lathe_faces(mesh,c,profile,n=20):
  x,y,z=c
  for (h,r),(h2,r2) in zip(profile,profile[1:]):
   for i in range(n):
@@ -264,6 +328,7 @@ red=Mesh('Awning_Crimson','Crimson');linen=Mesh('Awning_Linen','Linen')
 goods=Mesh('Market_Produce','Apple');copper=Mesh('Market_Copper','Copper')
 lamps=[]
 def flowerbox(x,y,z,w):
+ physical_bounds([(x-w*.5-.14,y-.19,z-.13),(x+w*.5+.14,y+.46,z+.21)])
  wood.box((x,y,z),(w,.17,.26))
  for dx in [-w*.43,w*.43]:iron.box((x+dx,y-.05,z+.06),(.04,.28,.3))
  for i in range(max(3,int(w*14))):
@@ -273,6 +338,7 @@ def flowerbox(x,y,z,w):
  for j in range(max(1,int(w/.35))):
   cluster_card(flower_sprites,(x-w*.33+j*.32,y+.26,z+.04),.35,.40,tilt=.20)
 def lantern(x,y,z):
+ physical_bounds([(x-.11,y-.273,z-.175),(x+.11,y+.275,z+.29)])
  wood.beam((x,y+.25,z-.15),(x,y+.25,z+.2),.025)
  iron.beam((x,y+.25,z+.18),(x,y+.03,z+.18),.014)
  lamp=Mesh('Lantern_Glass_%02d'%len(lamps),'Glass')
@@ -280,7 +346,7 @@ def lantern(x,y,z):
  for dx in [-.085,.085]:
   for dz in [.095,.265]:iron.box((x+dx,y-.10,z+dz),(.022,.28,.022))
  copper.box((x,y+.05,z+.18),(.22,.05,.22));copper.box((x,y-.25,z+.18),(.21,.045,.21))
- lamps.append({'position':[x,y-.08,z+.30],'range':2.2,'intensity_lumens':65,'colour_srgb':[1,.48,.16]})
+ lamps.append({'position':[x,y-.08,z+.30],'range':2.2,'intensity_lumens':65,'colour_srgb':[1,.48,.16],'owner':active_owner})
 def barrel(x,z,r=.25,h=.62):
  lathe(wood,(x,.015,z),[(0,r*.82),(.08,r),(h*.5,r*1.05),(h-.07,r),(h,r*.83)])
  wood.beam((x,h,z),(x,h+.025,z),r*.81,n=16)
@@ -290,6 +356,7 @@ def crate(x,z,w=.55):
  for y in [.06,.46]:
   wood.box((x,y,z+w*.5),(w+.04,.075,.055));wood.box((x,y,z-w*.5),(w+.04,.075,.055))
  wood.beam((x-w*.45,.06,z+w*.54),(x+w*.45,.46,z+w*.54),.025,n=4)
+@owned(lambda x,z,w=2.4,sidegoods=True:'stall_%s_%s'%(float(x),float(z)))
 def stall(x,z,w=2.4,sidegoods=True):
  # Every stall is on blocked ground. The south edge never overhangs a route.
  for dx in [-w/2,w/2]:
@@ -314,6 +381,7 @@ def stall(x,z,w=2.4,sidegoods=True):
  if sidegoods:barrel(x-w*.5-.35,z+.15);crate(x+w*.5+.35,z+.12)
  lantern(x+w*.42,1.82,z+.28)
 
+@owned(lambda tag,x,z,w,d,h=3.2:tag)
 def house(tag,x,z,w,d,h=3.2):
  # Boxes form wall segments around real apertures; there is no plaster behind glass.
  pl=Mesh(tag+'_Plaster','WorkshopLime' if tag=='Weavers' else 'Plaster')
@@ -321,6 +389,9 @@ def house(tag,x,z,w,d,h=3.2):
  glass=Mesh(tag+'_RecessedGlass','Glass')
  base=Mesh(tag+'_Foundation','Masonry')
  south=z+d/2;north=z-d/2;left=x-w/2;right=x+w/2
+ # Doors and glass close these house bodies. Open arcades/gates are separately
+ # bounded below so their passages remain clear.
+ physical_bounds([(left-.145,0,north),(right+.145,h,south+.10)])
  base.box((x,.19,z),(w,.38,d))
  pl.box((x,(h+.38)/2,north+.07),(w,h-.38,.14))
  # South wall partitioned around two windows, and a genuine inset doorway.
@@ -365,11 +436,18 @@ def house(tag,x,z,w,d,h=3.2):
   wood.beam((xx,2.65,south+.055),(xx+sign*w*.25,1.25,south+.055),.052,n=4)
  peak=h+w*({'Weavers':.24,'EastArcade':.18}.get(tag,.34))
  ridge=x-w*.18 if tag=='Weavers' else x
- pl.face([(left,h,south),(right,h,south),(ridge,peak,south)])
- pl.face([(right,h,north),(left,h,north),(ridge,peak,north)])
+ # Dense roof courses share six physical tiers, with the original gable slope.
+ for tier in range(6):
+  lo=h+(peak-h)*tier/6;hi=h+(peak-h)*(tier+1)/6;t=tier/6
+  physical_bounds([(left+(ridge-left)*t-.24,lo-.18,north-.24),
+                   (right+(ridge-right)*t+.24,hi+.23,south+.24)])
+ pl.face([(left,h,south),(right,h,south),(ridge,peak,south)],bound=False)
+ pl.face([(right,h,north),(left,h,north),(ridge,peak,north)],bound=False)
  wood.beam((x,h,south+.04),(ridge,peak,south+.04),.065,n=4)
  for side in [-1,1]:
   eave=x+side*(w*.5+.13);courses=max(5,round(abs(eave-ridge)/.24))
+  a=eave-side*.15;b=eave+side*.103
+  physical_bounds([(min(a,b),h-.44,north-.23),(max(a,b),h+.10,south+.23)])
   for j in range(courses):
    t=(j+.5)/courses;xx=ridge+(eave-ridge)*t
    yy=peak+.06+(h-peak)*(j/courses)
@@ -423,7 +501,8 @@ stall(-10.5,3.6,2.2);stall(-5.7,-6.8,2.3);stall(11.0,2.2,2.0);stall(7.6,8.5,2.6)
 stall(-5.05,1.15,.80,sidegoods=False)
 stall(-6.15,6.23,2.3,sidegoods=False)
 for x,z in [(-9,1.5),(-9,-3),(-8.7,6.1),(9.6,-3.8),(9.8,4.6),(6.4,4.9)]:
- barrel(x,z);crate(x+.53,z-.2,.45)
+ with owning('barrel_%s_%s'%(float(x),float(z))):barrel(x,z)
+ with owning('crate_%s_%s'%(float(x+.53),float(z-.2))):crate(x+.53,z-.2,.45)
 
 # Independently painted architectural details are layered over actual joinery.
 def panel(name,mat,x,y,z,w,h,west=False):
@@ -441,6 +520,7 @@ def shelf(x,y,z,w,mat='InnCabinet'):
 
 # Copper Kettle: a covered second-floor wood gallery, dormers, cut lattice panes,
 # sunken pantry and a real projecting sign, all behind the interaction row.
+active_owner=site.names['CopperKettle']
 gallery=Mesh('Inn_UpperGallery','Wood')
 gallery.box((-7.05,1.31,1.93),(2.76,.12,.58))
 for xx in [-8.32,-7.47,-6.62,-5.77]:
@@ -475,6 +555,7 @@ for xx in [-5.72,-5.23]:iron.beam((xx,2.96,1.95),(xx,2.84,1.95),.014)
 
 # Northwest repair shop: a low asymmetric green-grey roof, a deep work hood and
 # individual hung tools above the bench. The traverseable g row at z=-2 stays clear.
+active_owner=site.names['Weavers']
 workroof=Mesh('Workshop_LeanToRoof','WeatheredSlate')
 for j in range(5):
  workroof.box((-6.60,2.36+j*.108,-2.58-(j+.5)*.104),(3.64,.11,.114))
@@ -493,6 +574,7 @@ panel('Workshop_WaterwheelSign','WheelSign',-5.28,1.76,-3.00,.64,.69)
 wood.box((-5.28,1.76,-3.06),(.69,.74,.10))
 
 # East shop: verdigris shallow roof and an actual stone arcade on its west side.
+active_owner=site.names['EastArcade']
 arcade=Mesh('EastShop_StoneArcade','CanalMasonry');arcroof=Mesh('EastShop_PentRoof','CopperRoof')
 for zz in [-3.12,-1.10,.92]:
  arcade.box((8.78,.80,zz),(.30,1.60,.30))
@@ -513,6 +595,7 @@ wood.box((9.05,2.12,1.10),(.65,.76,.10))
 lantern(8.82,1.93,.90)
 
 # Breakfast surface at precisely .78, open sky above all interactive cells.
+active_owner=site.add('table',cell=(-4,3))
 table=Mesh('Breakfast_Table','Wood')
 table.box((-4,.715,3),(1.40,.13,.74))
 for x in [-4.55,-3.45]:
@@ -520,12 +603,15 @@ for x in [-4.55,-3.45]:
 table.box((-4,.40,3),(1.2,.08,.08));table.finish()
 linen.box((-4.43,.787,3),(.27,.014,.71))
 # The innkeeper works behind a narrow counter, inside the reserved k cell.
+active_owner=site.add('counter',cell=(-5,3))
 counter=Mesh('Keeper_CookingCounter','Wood')
 counter.box((-5,.36,3.25),(.62,.72,.30));counter.box((-5,.745,3.25),(.70,.05,.36))
 counter.finish()
 lathe(pots,(-5.08,.775,3.25),[(0,.10),(.045,.13),(.11,.14),(.115,.12),(.06,.10)],n=16)
+active_owner=site.names['table']
 lathe(copper,(-4.02,.785,2.78),[(0,.10),(.05,.14),(.20,.13),(.25,.08),(.28,.08),(.25,.065)])
 # Original inn sign is below eave and recessed west of the breakfast sightline.
+active_owner=site.names['CopperKettle']
 wood.box((-5.02,2.65,2.12),(.95,.075,.08))
 wood.beam((-5.48,2.2,2.12),(-4.56,2.63,2.12),.035,n=6)
 for x in [-4.94,-4.62]:iron.beam((x,2.61,2.12),(x,2.31,2.12),.012)
@@ -533,6 +619,7 @@ lathe(copper,(-4.78,1.90,2.12),[(0,.12),(.06,.21),(.27,.20),(.34,.12),(.37,.12),
 copper.beam((-4.62,2.1,2.12),(-4.43,2.25,2.12),.04,.025)
 
 # Low wall remains the exact four blocked x=2 cells.
+active_owner=site.add('orchard_wall')
 wall=Mesh('Orchard_Wall','Masonry')
 wall.box((2,.29,-1.5),(.36,.58,3.92))
 for row in range(3):
@@ -542,6 +629,7 @@ for j in range(8):
 wall.finish()
 
 # Old water gate: arch voussoirs and repairs. Nothing crosses the 4m stair route.
+active_owner=site.add('gate',cell=(0,-5))
 gate=Mesh('OldWaterGate_Masonry','CanalMasonry')
 for x in [-3.1,3.1]:
  gate.box((x,1.55,-6.95),(1.75,3.1,1.2))
@@ -570,6 +658,7 @@ stone.box((0,4.12,-6.20),(.42,.49,.32))
 gate.finish()
 # Repaired shallow stair landing: flat tread tops keep logical feet at y=0.
 # The water gate grows out of a real, thick, arched stone aqueduct, not a frame.
+active_owner=site.add('aqueduct')
 aqueduct=Mesh('North_Aqueduct','CanalMasonry')
 for side in [-1,1]:
  for j in range(70):
@@ -593,6 +682,7 @@ for xx in range(-13,14):
  stone.stone((xx,4.80,-6.72),(.44,.15,.28))
 aqueduct.finish()
 # An actual deep barrel-vault and dark rear sluice create a readable interior.
+active_owner=site.names['gate']
 vault=Mesh('Gate_DeepBarrelVault','CanalMasonry')
 for j in range(24):
  a=j*math.pi/24;b=(j+1)*math.pi/24
@@ -601,6 +691,7 @@ for xx in [-2.28,2.28]:vault.box((xx,.81,-8.7),(.16,1.62,4.65))
 vault.finish()
 rear=Mesh('Gate_ShadowedSluice','Mortar');rear.box((0,1.30,-10.97),(4.38,5.20,.08));rear.finish()
 for xx in [-1.7,-1.1,-.55,0,.55,1.1,1.7]:iron.box((xx,1.47,-10.89),(.055,2.94,.045))
+active_owner=0
 # Mortar recesses and chamfered stone ends give the tread rhythm real depth.
 for i in range(7):
  z=-4.5-(i+.5)*2/7
@@ -616,11 +707,13 @@ for i in range(12):
   stone.box((xx,.26-.1*i,-6.5-(i+.5)/3),(.28,.42,.32))
 stone.box((0,-1.25,-10.72),(3.0,.10,.48))
 for x in [-3.1,3.1]:
+ active_owner=site.names['gate']
  banner=Mesh('Gate_Banner_'+str(x),'Banner')
  banner.face([(x-.36,1.45,-6.21),(x+.35,1.36,-6.21),(x+.39,2.9,-6.25),(x-.39,2.9,-6.25)],[(0,0),(1,0),(1,1),(0,1)])
  banner.finish();iron.beam((x-.49,2.94,-6.23),(x+.49,2.94,-6.23),.025)
 
 # Empty fountain. Basin interior remains open and the runtime supplies all water.
+active_owner=site.add('fountain',cell=(4,2))
 fount=Mesh('Fountain_Basin','Masonry');ftrim=Mesh('Fountain_CarvedRim','Stone')
 lathe(fount,(4,0,2),[(0,1.35),(.10,1.43),(.22,1.36),(.23,1.16),(.28,1.12),(.52,1.12),(.58,1.27),(.72,1.27),(.72,1.05),(.31,1.05)],n=32)
 # Interior basin floor is real geometry at .30m, dark from material and shadow.
@@ -649,6 +742,7 @@ fount.finish();ftrim.finish()
 # The Bevy water plane and the lip share this small authoring manifest.
 vessels=json.loads((OUT/'water-vessels.json').read_text())
 for i,(x,z,r,h) in enumerate(vessels):
+ active_owner=site.add('fountain_vessel_%02d'%i)
  body=(wood,copper,pots)[i]; rim=(iron,copper,pots)[i]
  profile=[(.02,r*.75),(.09,r*.85),(h*.76,r*1.02),(h-.03,r*.94),(h,r),(h,r*.88),(h-.04,r*.86),(.06,r*.68)]
  lathe(body,(x,0,z),profile,16);body.beam((x,.045,z),(x,.062,z),r*.70,n=16)
@@ -662,6 +756,7 @@ for i,(x,z,r,h) in enumerate(vessels):
    for a,b in zip(handle,handle[1:]):copper.beam(a,b,.016,n=6)
  lathe(rim,(x,0,z),[(h-.022,r),(h-.01,r*1.025),(h,r*.99)],16)
 # Engraved golden valve sleeves, four bolts and a physically modelled open bore.
+active_owner=site.names['fountain']
 gold=Mesh('Fountain_BrassValve','Gold')
 panel('Fountain_EngravedValvePlate','ValveRelief',4,1.03,2.255,.38,.38)
 for j in range(24):
@@ -683,6 +778,8 @@ for xx,zz in [(3.08,1.08),(4.92,1.08),(3.08,2.92),(4.92,2.92)]:
   flowers.beam((xx+R.uniform(-.1,.1),.49,zz+R.uniform(-.1,.1)),(xx+R.uniform(-.1,.1),.55,zz+R.uniform(-.1,.1)),.028,.034,n=6)
 gold.finish()
 
+@owned(lambda x,z,s,tag,blossom=False,fruit=False:'tree_'+tag,
+       lambda x,z,s,tag,blossom=False,fruit=False: {'main':(5,-4),'secondary':(8,-2)}.get(tag))
 def tree(x,z,s,tag,blossom=False,fruit=False):
  tr=Mesh('trunk_'+tag,'Wood',origin=(x,0,z))
  canopy=Mesh('canopy_'+tag,'CrownBlossom' if blossom else 'CrownFresh',origin=(x,1.55*s,z))
@@ -714,6 +811,7 @@ tree(5,-4,1,'main',fruit=True);tree(8,-2,.85,'secondary',fruit=True)
 tree(7.75,5.1,.93,'fountain_garden')
 for i,(x,z,s,bloom) in enumerate([(-10.5,5.5,1.4,True),(10,7.5,1.3,True),(-12,-9,1.5,False),(13,-5,1.3,False),(-15,10,1.8,True),(15,11,1.6,True),(-15,-17,2,False),(14,-19,2,False)]):
  tree(x,z,s,'scenery_%02d'%i,blossom=bloom)
+active_owner=0
 # Flat leaves and seeds have a continuous distribution around their source
 # trees. Keep the central walking lane clear except for a few blown strays.
 scatter=random.Random(7127); fallen=Mesh('Orchard_Leaf_Litter','LitterLeaf')
@@ -744,12 +842,14 @@ for cx,cz,spread in [(5,-4,.52),(8,-2,.42),(7.75,5.1,.48),(2.20,-2.8,.30),(2.21,
 for mesh in [moss,chips,scraps,paper]:mesh.finish()
 # Foreground hanging flags stay entirely outside the play rectangle.
 for x in [-12,12]:
+ active_owner=site.add('foreground_flag_%s'%float(x))
  iron.beam((x,0,7.8),(x,4,7.8),.035)
  flag=Mesh('Foreground_Flag_'+str(x),'Banner')
  flag.face([(x,2.55,7.8),(x+1.0,2.4,7.85),(x+1.1,3.8,7.9),(x,3.9,7.8)],[(0,0),(1,0),(1,1),(0,1)])
  flag.finish()
 for mesh in [wood,stone,iron,pots,ivy,flowers,red,linen,goods,copper,flower_sprites]:mesh.finish()
-(OUT/'lights.json').write_text(json.dumps([{'pos':spec['position'],'kind':'sconce'} for spec in lamps],indent=2))
+(OUT/'lights.json').write_text(json.dumps([{'pos':spec['position'],'kind':'sconce','owner':spec['owner']} for spec in lamps],indent=2))
+site.write(OUT/'sight.json')
 # Static architecture is exported in material batches; animated fruit/crowns keep pivots.
 for mat in M.values():
  obs=[ob for ob in bpy.context.scene.objects if ob.type=='MESH' and ob.data.materials and ob.data.materials[0]==mat and not ob.name.startswith(('canopy_','trunk_','awning_','ripe_plum_','Fountain_','Breakfast_','Keeper_','TownSprite_'))]
@@ -813,6 +913,7 @@ report={
  'normal_map':'Non-colour tangent relief: paving 4x gradient, masonry 2.4x, other materials .75x; glTF normalTexture strength .35. Brighter worn centres subtly lower roughness. Metals carry actual metallic factors.',
  'procedural_colour_encoding':'Paving, BackstreetSetts, Stone, Masonry, CanalMasonry, Plaster and WorkshopLime are authored in linear RGB then explicitly encoded to byte sRGB. Their normal/roughness maps remain non-colour data. Existing painting-based material encoding is retained.',
  'materials':[m.name for m in M.values()],
+ 'sight_ownership':{'manifest':'assets/lanes/sight.json','range':[1,256],'channel':'TEXCOORD_1.x, constant positive semantic object ID per face; zero ground/debris','bounds':'Finite physical primitive AABBs, multipart walls, roofs, supports and arch sectors; material batching retains face IDs','owners':site.names},
  'fruit_prefix':'ripe_plum_main_','secondary_fruit_prefix':'ripe_plum_secondary_',
  'shake_pivot':'canopy_main branch attachment (5,1.55,-4); other crowns use equivalent branch attachments. Main trunk alone shakes; every crown has independent breeze. Awning stripe pivots sit at attached rear beam, linens and supports remain static.',
  'fountain':{'footprint':[[3,1],[5,3]],'centre':[4,2],'basin_floor_y':.30,'water_surface_y':.50,'water_radius':1.035,'rim_top_y':.74,'spouts':spouts,'empty_at_export':True,'central_pedestal_radius':.43},

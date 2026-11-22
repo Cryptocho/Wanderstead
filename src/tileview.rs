@@ -116,8 +116,7 @@ fn sample_hover(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     game: Res<Outing>,
-    sight: Res<crate::sight::SightWindow>,
-    images: Res<Assets<Image>>,
+    sight: Res<crate::sight::WorldSight>,
     mut ui: ResMut<Interface>,
     mut hover: ResMut<HoverTile>,
     mut mode: Local<PointerMode>,
@@ -179,14 +178,7 @@ fn sample_hover(
                     .0
                     .viewport_to_world(camera.1, p)
                     .ok()
-                    .and_then(|ray| {
-                        pick_visible_surface(
-                            &game,
-                            ray,
-                            camera.1,
-                            sight.near(p * window.scale_factor(), ray, camera.1, &images),
-                        )
-                    })
+                    .and_then(|ray| sight.pick(game.area, ray))
             })
     };
     let cell = hit.map(|(cell, _)| cell);
@@ -206,264 +198,6 @@ fn sample_hover(
     {
         ui.cursor = p;
     }
-}
-
-/// Solid columns mirror the authored meshes, not every forbidden map cell.
-/// A town boundary glyph can be an empty apron; it must not become a phantom wall.
-fn pick_height(area: Area, p: IVec2) -> f32 {
-    match map::glyph(area, p) {
-        b'#' if area == Area::Town => {
-            if p.x == 2 && (-3..=0).contains(&p.y) {
-                0.64
-            } else {
-                0.0
-            }
-        }
-        b'#' => {
-            if p.y >= 4 {
-                0.48
-            } else if p.x == -10 || p.x >= 9 {
-                1.15
-            } else if map::glyph(area, p + IVec2::Y) != b'#' {
-                2.15
-            } else {
-                0.74
-            }
-        }
-        b'T' | b't' => 2.5,
-        b'F' | b'f' => 0.74,
-        b'C' | b'!' => 0.77,
-        b'R' => 1.20,
-        b'b' => 0.0, // The authored table is wider than its canonical interaction tile.
-        b'k' => 0.0, // Screen-facing bodies use the same plane as their rendered cards.
-        _ => 0.0,
-    }
-}
-
-/// Unified world picking for QA; callers apply `book::pointer_over_book` first.
-pub fn pick_cell(game: &Outing, ray: Ray3d, camera: &GlobalTransform, near: f32) -> Option<IVec2> {
-    pick_visible_surface(game, ray, camera, near).map(|(cell, _)| cell)
-}
-
-fn pick_visible_surface(
-    game: &Outing,
-    ray: Ray3d,
-    camera: &GlobalTransform,
-    near: f32,
-) -> Option<(IVec2, f32)> {
-    let surface = pick_surface(game.area, ray, near);
-    let mut closest = surface.map_or(f32::INFINITY, |(_, distance)| distance);
-    let mut hit = surface.map(|(cell, t)| (cell, (ray.origin + *ray.direction * t).y));
-    let normal = *camera.forward();
-    let right = *camera.right();
-    let up = *camera.up();
-    let denominator = ray.direction.dot(normal);
-    if denominator.abs() < 0.00001 {
-        return hit;
-    }
-    let mut figure = |cell: IVec2, width: f32, height: f32, lift: f32| {
-        let foot = ground(cell) + Vec3::Y * lift;
-        let t = (foot - ray.origin).dot(normal) / denominator;
-        if t < near || t > closest {
-            return;
-        }
-        let point = ray.origin + *ray.direction * t;
-        let offset = point - foot;
-        if offset.dot(right).abs() <= width * 0.5 && (0.0..=height).contains(&offset.dot(up)) {
-            closest = t;
-            hit = Some((cell, point.y));
-        }
-    };
-    if game.area == Area::Town {
-        figure(crate::game::KEEPER, 0.74, 1.30, 0.0);
-        figure(map::APOTHECARY, 0.73, 1.31, 0.0);
-        figure(game.jelly, 0.70, 0.70, 0.0);
-    } else {
-        for enemy in &game.expedition.enemies {
-            if enemy.hp == 0 {
-                continue;
-            }
-            let (width, height, lift) = match enemy.kind {
-                crate::delve::EnemyKind::Sentry => {
-                    (if enemy.warn.is_some() { 1.49 } else { 1.20 }, 1.34, 0.0)
-                }
-                crate::delve::EnemyKind::Moth => (1.25, 0.99, 0.26),
-            };
-            figure(enemy.pos, width, height, lift);
-        }
-    }
-    hit
-}
-
-fn pick_surface(area: Area, ray: Ray3d, near: f32) -> Option<(IVec2, f32)> {
-    let plane_t = if ray.direction.y < -0.0001 {
-        -ray.origin.y / ray.direction.y
-    } else {
-        f32::INFINITY
-    };
-    let mut result = None;
-    let mut closest = f32::INFINITY;
-    if plane_t >= near && plane_t.is_finite() {
-        let ground_hit = ray.origin + *ray.direction * plane_t;
-        let floor = IVec2::new(ground_hit.x.round() as i32, ground_hit.z.round() as i32);
-        if map::inside(floor) {
-            result = Some(floor);
-            closest = plane_t;
-        }
-    }
-    for z in map::MIN.y..=map::MAX.y {
-        for x in map::MIN.x..=map::MAX.x {
-            let cell = IVec2::new(x, z);
-            let height = pick_height(area, cell);
-            if height == 0.0 {
-                continue;
-            }
-            let min = Vec3::new(x as f32 - 0.5, 0.0, z as f32 - 0.5);
-            let max = Vec3::new(x as f32 + 0.5, height, z as f32 + 0.5);
-            if let Some(t) = ray_box(ray, min, max)
-                && t >= near
-                && t < closest
-            {
-                closest = t;
-                result = Some(cell);
-            }
-        }
-    }
-    if area == Area::Town {
-        // Main houses include their projecting eaves; front porches stay clear of row 3.
-        for (min, max) in [
-            (Vec3::new(-8.58, 0.0, -1.58), Vec3::new(-5.52, 4.29, 1.78)),
-            (Vec3::new(-8.58, 0.0, 1.65), Vec3::new(-5.52, 2.92, 2.33)),
-            (
-                Vec3::new(-8.58, 0.0, -6.655),
-                Vec3::new(-4.62, 4.138, -2.945),
-            ),
-            (Vec3::new(-5.53, 2.10, 0.60), Vec3::new(-4.57, 2.25, 1.75)),
-            (
-                Vec3::new(-3.975, 0.0, -7.55),
-                Vec3::new(-2.225, 3.47, -6.35),
-            ),
-            (Vec3::new(2.225, 0.0, -7.55), Vec3::new(3.975, 3.47, -6.35)),
-            (Vec3::new(-3.1, 3.47, -7.55), Vec3::new(3.1, 4.24, -6.35)),
-            (Vec3::new(9.20, 0.0, -3.30), Vec3::new(12.80, 3.748, 1.10)),
-            (Vec3::new(8.565, 0.0, -3.30), Vec3::new(9.27, 2.92, 1.10)),
-            (Vec3::new(6.90, 0.0, 6.60), Vec3::new(10.30, 3.656, 9.00)),
-            (Vec3::new(7.45, 0.0, 4.80), Vec3::new(8.05, 3.30, 5.40)),
-            (
-                Vec3::new(-13.15, 4.24, -8.18),
-                Vec3::new(13.15, 4.875, -6.635),
-            ),
-        ] {
-            pick_box(ray, near, min, max, None, &mut closest, &mut result);
-        }
-        pick_box(
-            ray,
-            near,
-            Vec3::new(-4.70, 0.0, 2.63),
-            Vec3::new(-3.30, 0.78, 3.37),
-            Some(crate::game::TABLE),
-            &mut closest,
-            &mut result,
-        );
-        pick_box(
-            ray,
-            near,
-            Vec3::new(-5.35, 0.0, 3.07),
-            Vec3::new(-4.65, 0.77, 3.43),
-            Some(crate::game::KEEPER),
-            &mut closest,
-            &mut result,
-        );
-        pick_box(
-            ray,
-            near,
-            Vec3::new(3.72, 0.30, 1.72),
-            Vec3::new(4.28, 1.88, 2.28),
-            Some(map::FOUNTAIN),
-            &mut closest,
-            &mut result,
-        );
-    } else {
-        for (x, z, half, height) in [
-            (-6, -6, 0.30, 2.72),
-            (-4, -6, 0.30, 2.72),
-            (-1, -5, 0.30, 2.72),
-            (1, -5, 0.30, 2.72),
-            (4, -7, 0.30, 2.72),
-            (7, -7, 0.30, 2.72),
-            (-3, -3, 0.27, 1.53),
-            (3, -3, 0.27, 1.53),
-            (-3, 1, 0.27, 1.53),
-            (3, 1, 0.27, 1.53),
-        ] {
-            pick_box(
-                ray,
-                near,
-                Vec3::new(x as f32 - half, 0.0, z as f32 + 0.38 - half),
-                Vec3::new(x as f32 + half, height, z as f32 + 0.38 + half),
-                Some(IVec2::new(x, z)),
-                &mut closest,
-                &mut result,
-            );
-        }
-        for (x, z) in [(0.0, -5.0), (-5.0, -6.0), (5.5, -7.0)] {
-            pick_box(
-                ray,
-                near,
-                Vec3::new(x - 0.9, 2.10, z - 0.25),
-                Vec3::new(x + 0.9, 2.39, z + 0.25),
-                None,
-                &mut closest,
-                &mut result,
-            );
-        }
-    }
-    result.map(|cell| (cell, closest))
-}
-
-fn pick_box(
-    ray: Ray3d,
-    near: f32,
-    min: Vec3,
-    max: Vec3,
-    canonical: Option<IVec2>,
-    closest: &mut f32,
-    result: &mut Option<IVec2>,
-) {
-    if let Some(t) = ray_box(ray, min, max)
-        && t >= near
-        && t < *closest
-    {
-        *closest = t;
-        let hit = ray.origin + *ray.direction * t;
-        *result = canonical.or_else(|| {
-            let cell = IVec2::new(hit.x.round() as i32, hit.z.round() as i32);
-            map::inside(cell).then_some(cell)
-        });
-    }
-}
-
-fn ray_box(ray: Ray3d, min: Vec3, max: Vec3) -> Option<f32> {
-    let mut enter = 0.0_f32;
-    let mut leave = f32::INFINITY;
-    for axis in 0..3 {
-        let direction = ray.direction[axis];
-        let origin = ray.origin[axis];
-        if direction.abs() < 0.000001 {
-            if origin < min[axis] || origin > max[axis] {
-                return None;
-            }
-            continue;
-        }
-        let a = (min[axis] - origin) / direction;
-        let b = (max[axis] - origin) / direction;
-        enter = enter.max(a.min(b));
-        leave = leave.min(a.max(b));
-        if enter > leave {
-            return None;
-        }
-    }
-    (leave >= 0.0).then_some(enter)
 }
 
 // Borrow the mesh's own CPU buffers so rebuilding a preview retains capacity.
@@ -555,6 +289,7 @@ fn paint_tiles(
     mut hover: ResMut<HoverTile>,
     handles: Res<TileMeshes>,
     mut meshes: ResMut<Assets<Mesh>>,
+    sight: Res<crate::sight::WorldSight>,
     mut last_area: Local<Option<Area>>,
 ) {
     // Rules have now resolved this frame's action. Preview from the actual new
@@ -728,7 +463,8 @@ fn paint_tiles(
                 if mouse_cell.is_some() {
                     hover.surface_y + 0.04
                 } else {
-                    pick_height(game.area, cell) + 0.04
+                    let ray = Ray3d::new(Vec3::new(cell.x as f32, 32., cell.y as f32), Dir3::NEG_Y);
+                    sight.pick(game.area, ray).map_or(0., |(_, y)| y) + 0.04
                 }
             } else {
                 0.068

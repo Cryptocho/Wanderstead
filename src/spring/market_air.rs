@@ -32,9 +32,10 @@ pub(super) fn spawn(
     let gate = Vec3::new(-1.56, 4.90, -6.30);
     // make_lane.py cuts a .13 m radius sun-axis aperture through every crown card.
     let crown_gap = Vec3::new(6.05, 2.95, -4.55);
-    for (name, top, toe, head_width, toe_width, strength, phase) in [
+    for (name, owner, top, toe, head_width, toe_width, strength, phase) in [
         (
             "Sun spill over the water-gate crenel",
+            "gate",
             gate,
             gate - sun * ((gate.y - 0.18) / sun.y),
             0.095,
@@ -44,6 +45,7 @@ pub(super) fn spawn(
         ),
         (
             "Sun through the orchard crown aperture",
+            "tree_main",
             crown_gap + sun * 1.8,
             crown_gap - sun * ((crown_gap.y - 1.05) / sun.y),
             0.075,
@@ -54,6 +56,7 @@ pub(super) fn spawn(
     ] {
         c.spawn((
             Name::new(name),
+            part(Area::Town, owner),
             Mesh3d(meshes.add(sun_ribbon(top, toe, head_width, toe_width))),
             MeshMaterial3d(air(Vec4::new(8., phase, strength, 0.))),
             NotShadowCaster,
@@ -95,9 +98,9 @@ pub(super) fn spawn(
 
     // These are blossom trees, not the green fruit trees at (5,-4)/(8,-2).
     // Each small card holds one petal or one briefly lit mote, with separate phases.
-    for (tree, scale, phase) in [
-        (Vec3::new(-10.5, 0., 5.5), 1.4, 1.3),
-        (Vec3::new(10., 0., 7.5), 1.3, 9.7),
+    for (tree, scale, phase, owner) in [
+        (Vec3::new(-10.5, 0., 5.5), 1.4, 1.3, "tree_scenery_00"),
+        (Vec3::new(10., 0., 7.5), 1.3, 9.7, "tree_scenery_01"),
     ] {
         for (offset, size, variant, delay) in [
             (Vec3::new(0.92, 2.06, -0.24), Vec2::new(0.65, 1.15), 0., 0.),
@@ -112,6 +115,7 @@ pub(super) fn spawn(
         ] {
             c.spawn((
                 Name::new("A blossom drifting beside its tree"),
+                part(Area::Town, owner),
                 AirCard,
                 Mesh3d(quad.clone()),
                 MeshMaterial3d(air(Vec4::new(10., phase + delay, 0.80, variant))),

@@ -17,7 +17,8 @@
       ],
       "range": 4.8,
       "lumens": 2700,
-      "zone": "western moss archive"
+      "zone": "western moss archive",
+      "owner": 400
     },
     {
       "name": "tool_warm",
@@ -33,7 +34,8 @@
       ],
       "range": 4.3,
       "lumens": 2300,
-      "zone": "western coffer"
+      "zone": "western coffer",
+      "owner": 322
     },
     {
       "name": "saint_gold",
@@ -49,7 +51,8 @@
       ],
       "range": 4.8,
       "lumens": 3100,
-      "zone": "central spring shrine"
+      "zone": "central spring shrine",
+      "owner": 402
     },
     {
       "name": "nave_gold",
@@ -65,7 +68,8 @@
       ],
       "range": 4.5,
       "lumens": 2400,
-      "zone": "central nave and pressure covers"
+      "zone": "central nave and pressure covers",
+      "owner": 330
     },
     {
       "name": "return_lantern",
@@ -81,7 +85,8 @@
       ],
       "range": 4.8,
       "lumens": 2600,
-      "zone": "return stair approach"
+      "zone": "return stair approach",
+      "owner": 354
     },
     {
       "name": "east_lantern",
@@ -97,7 +102,8 @@
       ],
       "range": 4.5,
       "lumens": 2400,
-      "zone": "eastern wheel altar"
+      "zone": "eastern wheel altar",
+      "owner": 311
     },
     {
       "name": "east_amethyst",
@@ -114,7 +120,8 @@
       "range": 3.3,
       "lumens": 1050,
       "zone": "east fluorite annex",
-      "type": "crystal"
+      "type": "crystal",
+      "owner": 420
     },
     {
       "name": "north_seep",
@@ -131,7 +138,8 @@
       "range": 5.0,
       "lumens": 1700,
       "zone": "north flooded channel",
-      "type": "seep"
+      "type": "seep",
+      "owner": 0
     },
     {
       "name": "west_seep",
@@ -148,7 +156,8 @@
       "range": 5.2,
       "lumens": 1450,
       "zone": "western channel",
-      "type": "seep"
+      "type": "seep",
+      "owner": 0
     }
   ],
   "nodes": {
@@ -187,7 +196,7 @@
   "budget": {
     "mesh_objects": 37,
     "triangles": 108712,
-    "glb_bytes": 11061704
+    "glb_bytes": 12794036
   },
   "grid_snapshot": [
     "#####################",
@@ -263,5 +272,17 @@
       "cells": "~ in grid_snapshot",
       "exported": false
     }
+  },
+  "sight_owners": {
+    "manifest": "cistern/sight.json",
+    "objects": 167,
+    "terrain_owner": 0,
+    "vertex_attribute": "TEXCOORD_1.x",
+    "moving_bounds_roots": [
+      "tool_lid",
+      "tonic_lid",
+      "wheel_pickup"
+    ],
+    "static_bounds": "Authored physical solids, excluding separately tracked moving lids and wheel."
   }
 }

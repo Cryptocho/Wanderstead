@@ -292,6 +292,83 @@
     "Lane_CrownBlossom",
     "Lane_FlowerCluster"
   ],
+  "sight_ownership": {
+    "manifest": "assets/lanes/sight.json",
+    "range": [
+      1,
+      256
+    ],
+    "channel": "TEXCOORD_1.x, constant positive semantic object ID per face; zero ground/debris",
+    "bounds": "Finite physical primitive AABBs, multipart walls, roofs, supports and arch sectors; material batching retains face IDs",
+    "owners": {
+      "CopperKettle": 1,
+      "Weavers": 2,
+      "Apothecary": 3,
+      "Baker": 4,
+      "EastArcade": 5,
+      "EastLodging": 6,
+      "FountainFlorist": 7,
+      "Backdrop_00": 8,
+      "Backdrop_01": 9,
+      "Backdrop_02": 10,
+      "Backdrop_03": 11,
+      "Backdrop_04": 12,
+      "Backdrop_05": 13,
+      "Backdrop_06": 14,
+      "Backdrop_07": 15,
+      "Backdrop_08": 16,
+      "Backdrop_09": 17,
+      "Backdrop_10": 18,
+      "Backdrop_11": 19,
+      "Backdrop_12": 20,
+      "Backdrop_13": 21,
+      "Backdrop_14": 22,
+      "Backdrop_15": 23,
+      "Backdrop_16": 24,
+      "Backdrop_17": 25,
+      "Backdrop_18": 26,
+      "stall_-10.5_3.6": 27,
+      "stall_-5.7_-6.8": 28,
+      "stall_11.0_2.2": 29,
+      "stall_7.6_8.5": 30,
+      "stall_-5.05_1.15": 31,
+      "stall_-6.15_6.23": 32,
+      "barrel_-9.0_1.5": 33,
+      "crate_-8.47_1.3": 34,
+      "barrel_-9.0_-3.0": 35,
+      "crate_-8.47_-3.2": 36,
+      "barrel_-8.7_6.1": 37,
+      "crate_-8.17_5.8999999999999995": 38,
+      "barrel_9.6_-3.8": 39,
+      "crate_10.129999999999999_-4.0": 40,
+      "barrel_9.8_4.6": 41,
+      "crate_10.33_4.3999999999999995": 42,
+      "barrel_6.4_4.9": 43,
+      "crate_6.930000000000001_4.7": 44,
+      "table": 45,
+      "counter": 46,
+      "orchard_wall": 47,
+      "gate": 48,
+      "aqueduct": 49,
+      "fountain": 50,
+      "fountain_vessel_00": 51,
+      "fountain_vessel_01": 52,
+      "fountain_vessel_02": 53,
+      "tree_main": 54,
+      "tree_secondary": 55,
+      "tree_fountain_garden": 56,
+      "tree_scenery_00": 57,
+      "tree_scenery_01": 58,
+      "tree_scenery_02": 59,
+      "tree_scenery_03": 60,
+      "tree_scenery_04": 61,
+      "tree_scenery_05": 62,
+      "tree_scenery_06": 63,
+      "tree_scenery_07": 64,
+      "foreground_flag_-12.0": 65,
+      "foreground_flag_12.0": 66
+    }
+  },
   "fruit_prefix": "ripe_plum_main_",
   "secondary_fruit_prefix": "ripe_plum_secondary_",
   "shake_pivot": "canopy_main branch attachment (5,1.55,-4); other crowns use equivalent branch attachments. Main trunk alone shakes; every crown has independent breeze. Awning stripe pivots sit at attached rear beam, linens and supports remain static.",
@@ -352,7 +429,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 1
     },
     {
       "position": [
@@ -366,7 +444,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 2
     },
     {
       "position": [
@@ -380,7 +459,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 3
     },
     {
       "position": [
@@ -394,7 +474,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 4
     },
     {
       "position": [
@@ -408,7 +489,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 5
     },
     {
       "position": [
@@ -422,7 +504,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 6
     },
     {
       "position": [
@@ -436,7 +519,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 7
     },
     {
       "position": [
@@ -450,7 +534,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 8
     },
     {
       "position": [
@@ -464,7 +549,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 9
     },
     {
       "position": [
@@ -478,7 +564,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 10
     },
     {
       "position": [
@@ -492,7 +579,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 11
     },
     {
       "position": [
@@ -506,7 +594,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 12
     },
     {
       "position": [
@@ -520,7 +609,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 13
     },
     {
       "position": [
@@ -534,7 +624,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 14
     },
     {
       "position": [
@@ -548,7 +639,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 15
     },
     {
       "position": [
@@ -562,7 +654,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 16
     },
     {
       "position": [
@@ -576,7 +669,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 17
     },
     {
       "position": [
@@ -590,7 +684,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 18
     },
     {
       "position": [
@@ -604,7 +699,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 19
     },
     {
       "position": [
@@ -618,7 +714,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 20
     },
     {
       "position": [
@@ -632,7 +729,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 21
     },
     {
       "position": [
@@ -646,7 +744,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 22
     },
     {
       "position": [
@@ -660,7 +759,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 23
     },
     {
       "position": [
@@ -674,7 +774,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 24
     },
     {
       "position": [
@@ -688,7 +789,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 25
     },
     {
       "position": [
@@ -702,7 +804,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 26
     },
     {
       "position": [
@@ -716,7 +819,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 27
     },
     {
       "position": [
@@ -730,7 +834,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 28
     },
     {
       "position": [
@@ -744,7 +849,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 29
     },
     {
       "position": [
@@ -758,7 +864,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 30
     },
     {
       "position": [
@@ -772,7 +879,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 31
     },
     {
       "position": [
@@ -786,7 +894,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 32
     },
     {
       "position": [
@@ -800,7 +909,8 @@
         1,
         0.48,
         0.16
-      ]
+      ],
+      "owner": 5
     }
   ],
   "interaction_clearance": "Breakfast table (-4,3) top .78; keeper (-5,3) and plum (-3,3) have open overhead. Inn gallery and cloth stop at z2.33, behind interaction row3. Walkable stair-landing tread tops remain y0; real descending flight starts beyond north play boundary z=-6.5. Tree world anchors retained; crown pivots at branch attachment.",

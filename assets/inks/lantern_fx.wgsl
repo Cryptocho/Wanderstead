@@ -1,12 +1,10 @@
 #import bevy_pbr::{forward_io::VertexOutput,mesh_view_bindings::globals}
-#import "inks/sight_cutaway.wgsl"::hides_traveler
 @group(2) @binding(0) var<uniform> settings:vec4<f32>; // kind, phase, strength, variant
 fn hash(v:vec2<f32>)->f32 {return fract(sin(dot(v,vec2<f32>(37.37,73.21)))*3789.197);}
 @fragment fn fragment(v:VertexOutput)->@location(0) vec4<f32> {
     let uv=(floor(v.uv*vec2<f32>(28.0,42.0))+vec2<f32>(.5))/vec2<f32>(28.0,42.0);
     let t=globals.time+settings.y;
     let k=settings.x;
-    if (k<3.5 || k>4.5) && hides_traveler(v.position,v.world_position.y){discard;}
     let h=1.0-uv.y;
     // Outdoor air is confined to authored apertures and individual blossoms.
     // Unlike the indoor effects, its edges are continuous rather than card-sized pixels.

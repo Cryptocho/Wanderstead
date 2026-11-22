@@ -11,7 +11,6 @@
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
 }
 #import "inks/sky_shelter.wgsl"::{site_light,street_radiance}
-#import "inks/sight_cutaway.wgsl"::hides_traveler
 
 struct PaletteUniform {
     // enabled, world texels/metre, illumination levels/stop, ordered dither amplitude
@@ -21,6 +20,9 @@ struct PaletteUniform {
     single_tap: u32,
 }
 @group(2) @binding(100) var<uniform> palette: PaletteUniform;
+// Blender keeps a single material batch across houses. Every corner of a face
+// carries its complete model's ID in TEXCOORD_1.x. Shadows use Bevy's own pass.
+@group(2) @binding(102) var<storage,read> hidden_models:array<u32,32>;
 @group(2) @binding(101) var site_edges:texture_2d<f32>;
 @group(2) @binding(107) var ground_contact:texture_2d<f32>;
 @group(2) @binding(108) var ground_contact_sampler:sampler;
@@ -68,7 +70,10 @@ fn fragment(vertex: VertexOutput, @builtin(front_facing) is_front: bool) -> Frag
     let uy = dpdy(vertex.uv);
     let det = sx.x * sy.y - sx.y * sy.x;
 #endif
-    if hides_traveler(vertex.position,vertex.world_position.y) {discard;}
+#ifdef VERTEX_UVS_B
+    let owner=u32(round(vertex.uv_b.x));
+    if (hidden_models[owner>>5u] & (1u<<(owner&31u))) != 0u { discard; }
+#endif
     var ink_vertex=vertex;
     let drawn_mask=(pbr_bindings::material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_RESERVED_BITS) == pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_MASK;
 #ifdef VERTEX_UVS_A

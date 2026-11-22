@@ -20,8 +20,8 @@ cargo run --locked
 
 | 场景 | 平均 FPS | 中位帧时 | P95 | P99 |
 |---|---:|---:|---:|---:|
-| 十字街 `(0,1)`，默认 54° 俯视，三组居民与喷泉同屏 | 50.00 | 20.000 ms | 20.004 ms | 20.009 ms |
-| 泉台西南 `(3,4)`，拉至 0° 平视，距离 4.8 m | 50.00 | 20.000 ms | 20.005 ms | 20.009 ms |
+| 十字街 `(0,1)`，默认 54° 俯视，三组居民与喷泉同屏 | 50.00 | 20.000 ms | 20.003 ms | 20.004 ms |
+| 泉台西南 `(3,4)`，拉至 0° 平视，距离 4.8 m | 50.00 | 20.000 ms | 20.004 ms | 20.008 ms |
 
 ## 游玩
 
@@ -44,12 +44,15 @@ cargo run --locked
 
 ```sh
 blender-4.5 -b --python-exit-code 1 --python tools/make_lane.py -- --export-only
+blender-4.5 -b --python-exit-code 1 --python tools/bake_market_dressing.py
 blender-4.5 -b --python-exit-code 1 --python tools/bake_sky_shelter.py -- --town-only
 python3 tools/make_spring_probes.py
 ```
 
-第一步用同一太阳方向给果树留出真实的透光缝，导出建筑、路面与活动篷布。第二步烘焙短程接触阴影，以及四层高度的天光与街面反光；第三步生成漫反射、不同粗糙度的镜面探针。`tools/make_figures.py` 导出八向走姿和 64 帧主人物轮廓，`tools/make_trade_figures.py` 加工柜台、泉台和水门边的三个生活动作图集。[前景遮挡实测](reference/visual/spring-sight-cut.webp)左关右开，鼠标射线也能穿过淡出的中心。
+城镇、地宫的导出器把各物件的编号写进每个三角面的第二组 UV，同时导出实体轮廓；随后布景脚本把附属花架、货物和垂旗归给同一物件。独立更新地宫时先运行 `tools/make_cistern.py`，再烘焙布景。天光脚本生成接触阴影、四层天光和石路反光，探针脚本生成漫反射与镜面环境。`tools/make_figures.py` 导出旅人走姿，`tools/make_trade_figures.py` 加工居民动作。
 
-开发：`--qa /绝对路径/qa.sock` 开启本地 Unix datagram 接口。`state`、`expedition`、`project X Z [高度]`、`pick X Y` 查询实况；`pointer X Y`、`mouse down|up`、`key kp9 down|up`、`scroll 3` 走实际输入链。`sight [on|off]` 仅用于在原机位比较前景裁切。`capture NAME` 读回窗口，`measure` / `stats` 采集连续 600 帧，`exit` 退出。正常启动不监听 socket。可选 `WANDERSTEAD_GPU_PROFILE=1` 开启 Bevy 渲染阶段诊断；`passes` 返回 GPU 毫秒均值。
+**推近镜头时**，从镜头一直到旅人，所穿过的每件前景物体都会完整隐去。隐藏一栋房屋时，它的屋顶、窗、檐口和挂灯一起消失；隔着屋和摊位时两者同时让开。仍能看见旁边的建筑，也能点之前被屋面盖住的地面。拉远、走开或换层后重新判定，保持正常的碰撞和任务状态。[同一机位实测：左关、右开](reference/visual/spring-sight-cut.webp)。
+
+开发：`--qa /绝对路径/qa.sock` 开启本地 Unix datagram 接口。`state`、`expedition`、`project X Z [高度]`、`pick X Y` 查询实况；`pointer X Y`、`mouse down|up`、`key kp9 down|up`、`scroll 3` 走实际输入链。`sight` 返回当前隐藏的模型和角色，`sight off` / `sight on` 在同一机位作遮挡对照。`capture NAME` 读回窗口，`measure` / `stats` 采集连续 600 帧，`exit` 退出。正常启动不监听 socket。可选 `WANDERSTEAD_GPU_PROFILE=1` 开启 Bevy 渲染阶段诊断；`passes` 返回 GPU 毫秒均值。
 
 美术对照：`optics` 读取状态，`optics bloom off`、`optics dof off`、`optics air off` 分别关闭泛光、景深或广场局部空气与飘瓣，将 `off` 换成 `on` 恢复。镜头、光源和游戏回合保持原位。

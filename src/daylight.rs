@@ -42,6 +42,8 @@ pub(crate) struct Film {
     pub ev100: f32,
     tint: f32,
     shadow_lift: f32,
+    midtone_saturation: f32,
+    post_saturation: f32,
     highlight_gain: f32,
     highlight_saturation: f32,
     pub bloom_threshold: f32,
@@ -75,10 +77,15 @@ impl Film {
         ColorGrading {
             global: ColorGradingGlobal {
                 tint: self.tint,
+                post_saturation: self.post_saturation,
                 ..default()
             },
             shadows: ColorGradingSection {
                 lift: self.shadow_lift,
+                ..default()
+            },
+            midtones: ColorGradingSection {
+                saturation: self.midtone_saturation,
                 ..default()
             },
             highlights: ColorGradingSection {

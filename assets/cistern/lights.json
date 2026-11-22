@@ -5,7 +5,8 @@
       1.33,
       -5.32
     ],
-    "kind": "brazier"
+    "kind": "brazier",
+    "owner": 400
   },
   {
     "pos": [
@@ -13,7 +14,8 @@
       1.17,
       0.02
     ],
-    "kind": "brazier"
+    "kind": "brazier",
+    "owner": 322
   },
   {
     "pos": [
@@ -21,7 +23,8 @@
       1.33,
       -4.32
     ],
-    "kind": "brazier"
+    "kind": "brazier",
+    "owner": 402
   },
   {
     "pos": [
@@ -29,7 +32,8 @@
       1.18,
       0.9
     ],
-    "kind": "brazier"
+    "kind": "brazier",
+    "owner": 330
   },
   {
     "pos": [
@@ -37,7 +41,8 @@
       1.09,
       5.0
     ],
-    "kind": "brazier"
+    "kind": "brazier",
+    "owner": 354
   },
   {
     "pos": [
@@ -45,7 +50,8 @@
       1.65,
       -3.1
     ],
-    "kind": "brazier"
+    "kind": "brazier",
+    "owner": 311
   },
   {
     "pos": [
@@ -53,7 +59,8 @@
       1.55,
       0.08
     ],
-    "kind": "crystal"
+    "kind": "crystal",
+    "owner": 420
   },
   {
     "pos": [
@@ -61,7 +68,8 @@
       0.48,
       -5.9
     ],
-    "kind": "leak"
+    "kind": "leak",
+    "owner": 0
   },
   {
     "pos": [
@@ -69,6 +77,7 @@
       0.36,
       -0.8
     ],
-    "kind": "leak"
+    "kind": "leak",
+    "owner": 0
   }
 ]

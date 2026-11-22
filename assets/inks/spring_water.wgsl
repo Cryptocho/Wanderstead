@@ -1,7 +1,6 @@
 // Pixel-anchored moving normals. The actual town sun / nearby braziers produce
 // the highlights; bright bands at inlets are air entrained in moving water.
 #import bevy_pbr::{forward_io::{VertexOutput,FragmentOutput}, mesh_view_bindings::globals, pbr_fragment::pbr_input_from_standard_material, pbr_functions::{apply_pbr_lighting,main_pass_post_lighting_processing}}
-#import "inks/sight_cutaway.wgsl"::hides_traveler
 #import "inks/sky_shelter.wgsl"::visible_sky
 @group(2) @binding(104) var banks:texture_2d<f32>;
 struct WaterData { mode:vec4<f32>, lamps:array<vec4<f32>,9>, }
@@ -14,7 +13,6 @@ fn ripple(p:vec2<f32>,t:f32)->vec2<f32> {
     return vec2<f32>(a*.52+b*.35,b*.3+c*.42);
 }
 @fragment fn fragment(v:VertexOutput,@builtin(front_facing) front:bool)->FragmentOutput {
-    if hides_traveler(v.position,v.world_position.y){discard;}
     var pbr=pbr_input_from_standard_material(v,front);
     let t=globals.time;
     let wp=v.world_position.xyz;

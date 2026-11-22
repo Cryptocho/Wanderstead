@@ -10,6 +10,7 @@ use bevy::{
     },
 };
 
+use crate::sight::{MovingSolid, SightMask, part};
 use crate::{Frame, game::*};
 use crate::{delve::Quest, map::Area};
 
@@ -89,9 +90,7 @@ pub struct WorldPalette {
     #[texture(101)]
     pub site: Handle<Image>,
     #[storage(102, read_only, buffer, visibility(fragment))]
-    window: Buffer,
-    #[texture(103)]
-    contour: Handle<Image>,
+    hidden_models: Buffer,
     #[texture(105)]
     #[sampler(106)]
     shelter: Handle<Image>,
@@ -111,8 +110,11 @@ type WorldMaterial = ExtendedMaterial<StandardMaterial, WorldPalette>;
 #[derive(Resource, Default)]
 struct SurfaceCache(HashMap<AssetId<StandardMaterial>, Handle<WorldMaterial>>);
 
-#[derive(Component)]
-struct StageRoot;
+#[derive(Component, Clone, Copy)]
+enum StageRoot {
+    District,
+    Table,
+}
 #[derive(Component)]
 struct Inked;
 #[derive(Component)]
@@ -367,13 +369,13 @@ fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regi
         Name::new("Town street and shops"),
         ChildOf(roots.town),
         SceneRoot(assets.load("lanes/orchard.glb#Scene0")),
-        StageRoot,
+        StageRoot::District,
     ));
     commands.spawn((
         Name::new("Old springworks"),
         ChildOf(roots.cistern),
         SceneRoot(assets.load("cistern/cistern.glb#Scene0")),
-        StageRoot,
+        StageRoot::District,
     ));
     for (area, path) in [
         (Area::Town, "market/market-trimmings.glb#Scene0"),
@@ -382,7 +384,7 @@ fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regi
         commands.spawn((
             SceneRoot(assets.load(path)),
             ChildOf(roots.root(area)),
-            StageRoot,
+            StageRoot::District,
         ));
     }
     commands.spawn((
@@ -390,13 +392,13 @@ fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regi
         ChildOf(roots.town),
         SceneRoot(assets.load("inks/bowl.glb#Scene0")),
         Transform::from_translation(BOWL_POSITION),
-        StageRoot,
+        StageRoot::Table,
     ));
     commands.spawn((
         SceneRoot(assets.load("inks/curd.glb#Scene0")),
         ChildOf(roots.town),
         Transform::from_translation(BOWL_POSITION + Vec3::Y * 0.153),
-        StageRoot,
+        StageRoot::Table,
         Curd,
     ));
     commands.spawn((
@@ -404,7 +406,7 @@ fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regi
         ChildOf(roots.town),
         Transform::from_translation(BOWL_POSITION + Vec3::Y * 0.16),
         Visibility::Hidden,
-        StageRoot,
+        StageRoot::Table,
         Juice,
     ));
     commands.spawn((
@@ -412,7 +414,7 @@ fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regi
         SceneRoot(assets.load("inks/spoon.glb#Scene0")),
         Transform::from_translation(BOWL_POSITION + Vec3::new(0.14, 0.153, 0.11))
             .with_rotation(Quat::from_rotation_y(-0.35) * Quat::from_rotation_z(0.22)),
-        StageRoot,
+        StageRoot::Table,
         Spoon,
     ));
     commands.insert_resource(StageProps {
@@ -442,13 +444,17 @@ fn bind_sky(
     commands.remove_resource::<MorningSky>();
 }
 
-fn in_stage(mut entity: Entity, roots: &Query<&StageRoot>, parents: &Query<&ChildOf>) -> bool {
+fn stage_of(
+    mut entity: Entity,
+    roots: &Query<&StageRoot>,
+    parents: &Query<&ChildOf>,
+) -> Option<StageRoot> {
     loop {
-        if roots.contains(entity) {
-            return true;
+        if let Ok(&root) = roots.get(entity) {
+            return Some(root);
         }
         let Ok(parent) = parents.get(entity) else {
-            return false;
+            return None;
         };
         entity = parent.parent();
     }
@@ -474,16 +480,16 @@ fn bind_stage_surfaces(
     site: Res<SiteEdges>,
     shelter: Res<SkyShelter>,
     contact: Res<GroundContact>,
-    sight: Res<crate::sight::SightWindow>,
+    sight: Res<SightMask>,
     names: Query<&Name>,
     flowing: Single<Entity, With<crate::spring::Refilled>>,
 ) {
     for (entity, source, mesh, name) in &surfaces {
-        if !in_stage(entity, &roots, &parents) {
+        let Some(stage) = stage_of(entity, &roots, &parents) else {
             // Figure sheets and effects use their own material families.
             commands.entity(entity).insert(Inked);
             continue;
-        }
+        };
         let Some(base) = originals.get(&source.0) else {
             continue;
         };
@@ -500,12 +506,12 @@ fn bind_stage_surfaces(
                 materials.add(ExtendedMaterial {
                     base,
                     extension: WorldPalette {
-                        sunward: crate::daylight::SQUARE.to_sun()
+                        sunward: crate::daylight::SQUARE
+                            .to_sun()
                             .extend(crate::daylight::SQUARE.film.bloom_threshold),
                         single_tap: u32::from(name.is_some_and(|m| m.0.starts_with("Lane_"))),
                         settings: palette.uniform(),
-                        window: sight.buffer.clone(),
-                        contour: sight.contour.clone(),
+                        hidden_models: sight.buffer.clone(),
                         shelter: shelter.town.clone(),
                         contact: contact.0.clone(),
                         floor_style: Vec4::new(
@@ -531,25 +537,40 @@ fn bind_stage_surfaces(
                 })
             })
             .clone();
+        if matches!(stage, StageRoot::Table) {
+            commands.entity(entity).insert(part(Area::Town, "table"));
+        }
         // The workshop's actual wheel fits the bronze socket: reuse its mesh
         // and material, so taking it and reinstalling it cannot change its design.
         let mut ancestor = entity;
         while let Ok(parent) = parents.get(ancestor) {
             ancestor = parent.parent();
-            if names
-                .get(ancestor)
-                .is_ok_and(|n| n.as_str() == "wheel_pickup")
-            {
+            let Ok(name) = names.get(ancestor) else {
+                continue;
+            };
+            let owner = match name.as_str() {
+                "tool_lid" => "tool",
+                "tonic_lid" => "tonic",
+                "wheel_pickup" => "relic",
+                _ => continue,
+            };
+            commands
+                .entity(entity)
+                .insert(MovingSolid(part(Area::Cistern, owner).0));
+            if owner == "relic" {
+                let fountain = part(Area::Town, "fountain");
                 commands.spawn((
                     Name::new("Returned bronze handwheel"),
                     Mesh3d(mesh.0.clone()),
+                    fountain,
+                    MovingSolid(fountain.0),
                     MeshMaterial3d(material.clone()),
                     Transform::from_xyz(4., 1.03, 2.40).with_rotation(Quat::from_rotation_z(0.23)),
                     ChildOf(*flowing),
                     Inked,
                 ));
-                break;
             }
+            break;
         }
         commands
             .entity(entity)
@@ -603,7 +624,7 @@ fn bind_tree_nodes(
     parents: Query<&ChildOf>,
 ) {
     for (entity, name, transform) in &nodes {
-        if !in_stage(entity, &roots, &parents) {
+        if stage_of(entity, &roots, &parents).is_none() {
             continue;
         }
         commands.entity(entity).insert(TreeNodeBound);
@@ -741,7 +762,7 @@ fn breakfast_feedback(
                 SceneRoot(props.plum.clone()),
                 Transform::from_translation(portion_position(index, count) + Vec3::Y * 0.30),
                 Portion { index, age: 0.0 },
-                StageRoot,
+                StageRoot::Table,
             ));
         }
     }

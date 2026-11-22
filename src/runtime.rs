@@ -267,7 +267,7 @@ fn wire(
     ui: Res<Interface>,
     lens: Res<LensState>,
     look: (Res<PaletteState>, ResMut<Optics>),
-    sight: (ResMut<crate::sight::SightWindow>, Res<Assets<Image>>),
+    mut sight: ResMut<crate::sight::WorldSight>,
     camera: Single<(&Camera, &GlobalTransform), With<Camera3d>>,
     hover: Res<HoverTile>,
     passes: Res<bevy::diagnostic::DiagnosticsStore>,
@@ -327,14 +327,12 @@ fn wire(
             json!({"air":optics.air,"bloom":optics.bloom,"dof":optics.dof})
         }
         Some("sight") => {
-            let mut window = sight.0;
             match words.next() {
-                Some("on") => window.enabled = true,
-                Some("off") => window.enabled = false,
+                Some("on") => sight.enabled = true,
+                Some("off") => sight.enabled = false,
                 _ => {}
             }
-            let (rect, meta) = window.description();
-            json!({"enabled":window.enabled,"rect":rect,"meta":meta})
+            sight.description(game.area)
         }
         Some("pick") => {
             let point = words
@@ -354,10 +352,7 @@ fn wire(
                 })
                 .and_then(|p| {
                     let ray = camera.0.viewport_to_world(camera.1, p).ok()?;
-                    let near = sight
-                        .0
-                        .near(p * win.scale_factor(), ray, camera.1, &sight.1);
-                    crate::tileview::pick_cell(&game, ray, camera.1, near)
+                    sight.pick(game.area, ray).map(|(cell, _)| cell)
                 });
             json!(cell.map(|p| p.to_array()))
         }

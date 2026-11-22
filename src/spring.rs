@@ -7,6 +7,7 @@ use crate::{
     game::Outing,
     lens::{LensSet, LensState},
     map::{self, Area},
+    sight::{SightPart, part},
     stage::Regions,
 };
 use bevy::{
@@ -20,7 +21,7 @@ use bevy::{
     render::{
         camera::Exposure,
         mesh::Indices,
-        render_resource::{AsBindGroup, Buffer, PrimitiveTopology, ShaderRef},
+        render_resource::{AsBindGroup, PrimitiveTopology, ShaderRef},
     },
     transform::TransformSystem,
 };
@@ -61,10 +62,6 @@ struct WaterInk {
     mode: Vec4,
     #[uniform(100)]
     lamps: [Vec4; 9],
-    #[storage(102, read_only, buffer, visibility(fragment))]
-    window: Buffer,
-    #[texture(103)]
-    contour: Handle<Image>,
     #[texture(104)]
     banks: Handle<Image>,
     #[texture(105)]
@@ -81,10 +78,6 @@ type Current = ExtendedMaterial<StandardMaterial, WaterInk>;
 struct AirInk {
     #[uniform(0)]
     settings: Vec4,
-    #[storage(102, read_only, buffer, visibility(fragment))]
-    window: Buffer,
-    #[texture(103)]
-    contour: Handle<Image>,
 }
 impl Material for AirInk {
     fn fragment_shader() -> ShaderRef {
@@ -127,6 +120,7 @@ enum LampKind {
 struct Lamp {
     pos: [f32; 3],
     kind: LampKind,
+    owner: u16,
 }
 
 fn mesh(pos: Vec<[f32; 3]>, norm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, indices: Vec<u32>) -> Mesh {
@@ -211,7 +205,6 @@ fn build(
     mut waters: ResMut<Assets<Current>>,
     mut airs: ResMut<Assets<AirInk>>,
     server: Res<AssetServer>,
-    sight: Res<crate::sight::SightWindow>,
     banks: Res<crate::stage::SiteEdges>,
     shelter: Res<crate::stage::SkyShelter>,
 ) {
@@ -234,13 +227,7 @@ fn build(
         ),
         sky: server.load("inks/morning-sky.png"),
     });
-    let mut air = |settings| {
-        airs.add(AirInk {
-            settings,
-            window: sight.buffer.clone(),
-            contour: sight.contour.clone(),
-        })
-    };
+    let mut air = |settings| airs.add(AirInk { settings });
     c.spawn((
         Name::new("Sun above the copper roofs"),
         Sun,
@@ -297,8 +284,6 @@ fn build(
             extension: WaterInk {
                 mode: Vec4::new(mode, sun.x, sun.y, sun.z),
                 lamps: reflections,
-                window: sight.buffer.clone(),
-                contour: sight.contour.clone(),
                 banks: banks.0.clone(),
                 shelter: shelter
                     .at(if mode == 0. {
@@ -332,10 +317,15 @@ fn build(
         serde_json::from_str(include_str!("../assets/lanes/water-vessels.json"))
             .expect("authored fountain vessels");
     let meniscus = meshes.add(Circle::new(1.).mesh().resolution(16));
-    for [x, z, r, h] in vessels {
+    for ([x, z, r, h], owner) in vessels.into_iter().zip([
+        "fountain_vessel_00",
+        "fountain_vessel_01",
+        "fountain_vessel_02",
+    ]) {
         c.spawn((
             Mesh3d(meniscus.clone()),
             MeshMaterial3d(vessel_surface.clone()),
+            part(Area::Town, owner),
             Transform::from_xyz(x, h - 0.044, z)
                 .with_rotation(upward)
                 .with_scale(Vec3::splat(r * 0.86)),
@@ -346,6 +336,7 @@ fn build(
     c.spawn((
         Mesh3d(meshes.add(Circle::new(1.035).mesh().resolution(32))),
         MeshMaterial3d(material(1.)),
+        part(Area::Town, "fountain"),
         Transform::from_xyz(4., 0.50, 2.).with_rotation(upward),
         NotShadowCaster,
         ChildOf(flowing),
@@ -353,6 +344,7 @@ fn build(
     c.spawn((
         Mesh3d(meshes.add(jets())),
         MeshMaterial3d(material(2.)),
+        part(Area::Town, "fountain"),
         NotShadowCaster,
         ChildOf(flowing),
     ));
@@ -493,6 +485,7 @@ fn build(
             };
             c.spawn((
                 AirCard,
+                SightPart(l.owner),
                 Mesh3d(quad.clone()),
                 MeshMaterial3d(air(Vec4::new(kind, phase, strength, 0.))),
                 Transform::from_translation(p + Vec3::Y * offset).with_scale(size.extend(1.)),
@@ -501,9 +494,13 @@ fn build(
             ));
         }
     }
-    for p in [Vec3::new(-7.69, 5.75, -0.12), Vec3::new(-7.45, 6.00, -5.02)] {
+    for (p, owner) in [
+        (Vec3::new(-7.69, 5.75, -0.12), "CopperKettle"),
+        (Vec3::new(-7.45, 6.00, -5.02), "Weavers"),
+    ] {
         c.spawn((
             AirCard,
+            part(Area::Town, owner),
             Mesh3d(quad.clone()),
             MeshMaterial3d(air(Vec4::new(1., p.x, 1., 0.))),
             Transform::from_translation(p).with_scale(Vec3::new(1.25, 2.1, 1.)),

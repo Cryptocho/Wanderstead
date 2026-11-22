@@ -26,8 +26,7 @@ These six PNG sources were generated with the same OpenAI model on November
 22, 2026. The user's town/ruin screenshots informed camera and short JRPG
 proportions; no character pixels were copied from those screenshots.
 The additional traveler-diagonal.png is an original 4x4 sheet generated using
-the original traveler's direction sheet: SW, NW, NE, SE. The walking, combat
-and action sheets also supply the exact 64 pose outlines in traveler-contour.png.
+the original traveler's direction sheet: SW, NW, NE, SE.
 
 The herbalist and the eight market/ruin furnishings are original generate_image
 artwork for the same chapter. Sources: art/market/herbalist-source.webp and
@@ -100,7 +99,7 @@ to a 1.90s held vial-to-light inspection. Neither cycle changes actions or turns
 Gameplay identities and collision cells remain unchanged. The only added occupant
 is a presentation-only seated worker/cat on the existing blocked aqueduct apron.
 Animated alpha silhouettes still drive the real upright sun-shadow casters;
-visible cards retain the shared sight-cutoff material. sole-contact.png is a
+visible cards participate in whole-object foreground cutaway. sole-contact.png is a
 new hand-authored procedural pair of small soft shoe contacts for human figures
 (maximum opacity 78/255), replacing their broad generic contact disc. It is not
 a painted directional shadow; the real light/caster supplies that shadow.
@@ -130,3 +129,14 @@ Seated vignette addition, November 22, 2026:
   their original +Z orientation. Visible cards remain camera-facing.
 Final authored inspections: third rows of trade-contact-sheet.png and
 trade-silhouettes.png; exact timing, feet and assets in trade-atlas-layout.json.
+
+Foreground ownership: figures.rs assigns 768 to the keeper, 769 to the
+apothecary, 770 to the complete seated worker/cat vignette, 771 to the jelly,
+772 plus enemy.id (currently 0..4) to cistern enemies, and 800..831 to ground
+fruit. SightActor lives at the actual interpolated render root; SightPart
+joins its visible card, detached contact and health pips under the same ID.
+Only active-area actor roots participate. Camera-layer cutaway preserves
+quest/combat Visibility and the separate animated shadow-only casters.
+Ground fruit includes falling/bouncing poses; consumed/gathered flights and
+throw/spark effects remain presentation effects. The obsolete generated
+traveler-contour.png aperture is removed; atlas pivots and scales are unchanged.

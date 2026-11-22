@@ -8,7 +8,7 @@ Exports include a black silhouette inspection sheet and stable sole pivots.
 from collections import deque
 from pathlib import Path
 import json
-from PIL import Image, ImageDraw, ImageFilter, ImageChops
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "art/figures/source"
@@ -84,6 +84,7 @@ metadata = {
     "palette_colors": 96, "sampler": "nearest", "alpha": "binary",
     "padding_below_feet": 2, "anatomy": "original short 2.5-3-head figures; uniform scale only",
     "trade_cycles": "trade-atlas-layout.json",
+    "foreground_visibility": "whole-object ownership; no traveler aperture masks",
 }
 atlases = {}
 
@@ -123,20 +124,6 @@ export("copper-sentry", 4, 4, (128,128), 108, ["idle","prepare","strike","down"]
 export("phosphor-moth", 4, 4, (128,128), 94, ["idle","prepare","dive","down"], 1)
 export("jelly", 4, 2, (96,96), 78, ["hop","swallow"])
 export("plum", 1, 1, (32,32), 25, ["plum"])
-
-# Project exactly the pose actually on screen. One texel = two source pixels;
-# the additional margin gives a feather even at the boot pivot in the last row.
-contours=Image.new('L',(8*96,8*80))
-for group,name in enumerate(('traveler-walk','traveler-actions','traveler-combat','traveler-diagonal')):
-    alpha=atlases[name].getchannel('A')
-    for frame in range(16):
-        x=frame%4*160;y=frame//4*128
-        small=alpha.crop((x,y,x+160,y+128)).resize((80,64),Image.Resampling.BOX).point(lambda a:255 if a>=60 else 0)
-        field=Image.new('L',(96,80));field.paste(small,(8,8))
-        fringe=field.filter(ImageFilter.MaxFilter(9)).filter(ImageFilter.GaussianBlur(2.15))
-        mask=ImageChops.lighter(field.filter(ImageFilter.MaxFilter(3)),fringe)
-        idx=group*16+frame;contours.paste(mask,(idx%8*96,idx//8*80))
-contours.save(OUT/'traveler-contour.png',optimize=True)
 
 # Portrait uses the newly drawn large head, never the obsolete long figure.
 front = sources["traveler-walk"][1]
@@ -181,7 +168,7 @@ silhouettes.save(ART / "silhouette-check.png")
 sample = atlases["traveler-walk"].crop((0,0,640,128))
 sample.resize((1280,256), Image.Resampling.NEAREST).save(ART / "traveler-sample.png")
 (ART / "atlas-layout.json").write_text(json.dumps(metadata, indent=2)+"\n")
-print("Exported walking and action atlases, pose contours, portrait and silhouette study.")
+print("Exported walking and action atlases, portrait and silhouette study.")
 
 # Trade workers use held object key poses and per-boot anchoring.
 import make_trade_figures

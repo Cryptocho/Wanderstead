@@ -5,6 +5,7 @@
   "padding_below_feet": 2,
   "anatomy": "original short 2.5-3-head figures; uniform scale only",
   "trade_cycles": "trade-atlas-layout.json",
+  "foreground_visibility": "whole-object ownership; no traveler aperture masks",
   "traveler-walk": {
     "tile": [
       160,

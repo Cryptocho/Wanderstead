@@ -8,7 +8,7 @@ use bevy::{
     render::{
         mesh::{Indices, MeshAabb},
         primitives::Aabb,
-        render_resource::{AsBindGroup, Buffer, PrimitiveTopology, ShaderRef},
+        render_resource::{AsBindGroup, PrimitiveTopology, ShaderRef},
         view::{RenderLayers, VisibilitySystems},
     },
     transform::TransformSystem,
@@ -20,15 +20,9 @@ use crate::{
     map::Area,
 };
 
-use crate::sight::{BODY_PIXELS, HEIGHT as TRAVEL_HEIGHT, SightWindow, TravelPose};
+use crate::sight::{SHADOW_LAYER, SightActor, SightPart};
 #[derive(Asset, AsBindGroup, TypePath, Clone, Debug)]
 struct FigureInk {
-    #[uniform(100)]
-    allow_cut: u32,
-    #[storage(102, read_only, buffer, visibility(fragment))]
-    window: Buffer,
-    #[texture(103)]
-    contour: Handle<Image>,
     #[texture(105)]
     #[sampler(106)]
     shelter: Handle<Image>,
@@ -46,7 +40,10 @@ pub struct FiguresPlugin;
 #[derive(Component)]
 pub struct PlayerVisual;
 
-const SHADOW_LAYER: usize = 1;
+const BODY_PIXELS: f32 = 108.0;
+const TRAVEL_HEIGHT: f32 = 1.32;
+const FRUIT_OWNER_START: u16 = 800;
+const FRUIT_OWNER_COUNT: u32 = 32;
 const WALK_TIME: f32 = 0.28;
 const ACTION_TIME: f32 = 0.72;
 const THROW_DELAY: f32 = 0.25;
@@ -213,7 +210,6 @@ struct VisualBeat {
 struct Sheet {
     frames: Vec<Handle<Mesh>>,
     material: Handle<FigureMaterial>,
-    contour_offset: u32,
     bounds: Aabb,
 }
 
@@ -291,7 +287,6 @@ fn sheet(
     server: &AssetServer,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<FigureMaterial>,
-    sight: &SightWindow,
     shelter: &Handle<Image>,
 ) -> Sheet {
     let texture = server.load_with_settings(path, |settings: &mut ImageLoaderSettings| {
@@ -317,9 +312,6 @@ fn sheet(
             ..default()
         },
         extension: FigureInk {
-            allow_cut: (!path.starts_with("figures/traveler-")) as u32,
-            window: sight.buffer.clone(),
-            contour: sight.contour.clone(),
             shelter: shelter.clone(),
         },
     });
@@ -346,12 +338,6 @@ fn sheet(
     // therefore need these finite bounds explicitly, including their casters.
     Sheet {
         frames,
-        contour_offset: match path {
-            "figures/traveler-actions.png" => 16,
-            "figures/traveler-combat.png" => 32,
-            "figures/traveler-diagonal.png" => 48,
-            _ => 0,
-        },
         material,
         bounds,
     }
@@ -378,7 +364,6 @@ fn spawn_figures(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut skin: ResMut<Assets<FigureMaterial>>,
-    sight: Res<SightWindow>,
     state: Res<Outing>,
     shelter: Res<crate::stage::SkyShelter>,
 ) {
@@ -393,7 +378,6 @@ fn spawn_figures(
             &server,
             &mut meshes,
             &mut skin,
-            &sight,
             shelter.at(state.area),
         )
     };
@@ -547,8 +531,15 @@ fn spawn_figures(
         );
     }
     if state.area == Area::Town {
-        for &cell in &state.fruit {
-            spawn_ground_fruit(&mut commands, &art, cell, 0.0, false);
+        for (i, &cell) in state.fruit.iter().enumerate() {
+            spawn_ground_fruit(
+                &mut commands,
+                &art,
+                cell,
+                FRUIT_OWNER_START + i as u16,
+                0.0,
+                false,
+            );
         }
     }
     commands.insert_resource(art);
@@ -558,6 +549,62 @@ fn enemy_kind(enemy: &Enemy) -> ActorKind {
     match enemy.kind {
         EnemyKind::Sentry => ActorKind::Sentry,
         EnemyKind::Moth => ActorKind::Moth,
+    }
+}
+
+// Alpha extents cover every authored pose, including held props and the worker's
+// cat. Enemy volumes also contain their health pips; contacts share ownership.
+fn actor_sight(kind: ActorKind, enemy_id: Option<u8>) -> Option<SightActor> {
+    let (id, area, half_width, height, lift) = match kind {
+        ActorKind::Traveler => return None,
+        ActorKind::Keeper => (768, Area::Town, 0.374, 1.30, 0.0),
+        ActorKind::Herbalist => (769, Area::Town, 0.425, 1.31, 0.0),
+        ActorKind::Worker => (770, Area::Town, 0.691, 1.08, 0.0),
+        ActorKind::Jelly => (771, Area::Town, 0.395, 0.593, 0.0),
+        ActorKind::Sentry => (
+            772 + u16::from(enemy_id.expect("enemy identity")),
+            Area::Cistern,
+            0.745,
+            1.52,
+            0.0,
+        ),
+        ActorKind::Moth => (
+            772 + u16::from(enemy_id.expect("enemy identity")),
+            Area::Cistern,
+            0.626,
+            1.105,
+            0.0,
+        ),
+    };
+    Some(SightActor {
+        id,
+        area,
+        half_width,
+        height,
+        lift,
+    })
+}
+
+impl SightActor {
+    /// Interaction facts stay on logical cells while render roots interpolate.
+    pub(crate) fn pick_cell(&self, game: &Outing, foot: Vec3) -> Option<IVec2> {
+        if self.area != game.area {
+            return None;
+        }
+        match self.id {
+            768 => Some(KEEPER),
+            769 => Some(crate::map::APOTHECARY),
+            770 => None,
+            771 => Some(game.jelly),
+            772..=776 => game
+                .expedition
+                .enemies
+                .iter()
+                .find(|enemy| u16::from(enemy.id) + 772 == self.id && enemy.hp > 0)
+                .map(|enemy| enemy.pos),
+            800..=831 => Some(IVec2::new(foot.x.round() as i32, foot.z.round() as i32)),
+            _ => None,
+        }
     }
 }
 
@@ -600,6 +647,12 @@ fn spawn_actor(
     if kind == ActorKind::Traveler {
         commands.entity(root).insert(PlayerVisual);
     }
+    let sight = actor_sight(kind, enemy.map(|enemy| enemy.id));
+    if visible != Visibility::Hidden {
+        if let Some(sight) = sight {
+            commands.entity(root).insert(sight);
+        }
+    }
     let card = commands
         .spawn((
             FigureCard,
@@ -610,8 +663,8 @@ fn spawn_actor(
             NotShadowCaster,
         ))
         .id();
-    if kind == ActorKind::Traveler {
-        commands.entity(card).insert(TravelPose(index as u32));
+    if let Some(sight) = sight {
+        commands.entity(card).insert(SightPart(sight.id));
     }
     // Upright town casters face the sun azimuth, retaining full silhouette breadth.
     // Underground lamp proxies retain their original +Z-facing convention.
@@ -657,6 +710,9 @@ fn spawn_actor(
             NotShadowReceiver,
         ))
         .id();
+    if let Some(sight) = sight {
+        commands.entity(shadow).insert(SightPart(sight.id));
+    }
     let pips = enemy.map(|enemy| {
         let pips: [Entity; 3] = std::array::from_fn(|i| {
             commands
@@ -680,6 +736,11 @@ fn spawn_actor(
                 .id()
         });
         commands.entity(root).add_children(&pips);
+        if let Some(sight) = sight {
+            for pip in pips {
+                commands.entity(pip).insert(SightPart(sight.id));
+            }
+        }
         pips
     });
     commands.entity(root).insert(Actor {
@@ -732,6 +793,7 @@ fn spawn_ground_fruit(
     commands: &mut Commands,
     art: &FigureArt,
     cell: IVec2,
+    owner: u16,
     delay: f32,
     falling: bool,
 ) {
@@ -743,6 +805,14 @@ fn spawn_ground_fruit(
             falling,
         },
         FigureCard,
+        SightActor {
+            id: owner,
+            area: Area::Town,
+            half_width: 0.096,
+            height: 0.128,
+            lift: 0.0,
+        },
+        SightPart(owner),
         Mesh3d(art.plum.frames[0].clone()),
         MeshMaterial3d(art.plum.material.clone()),
         art.plum.bounds,
@@ -762,7 +832,7 @@ fn observe_turn(
     mut beat: ResMut<VisualBeat>,
     mut actors: Query<(Entity, &mut Actor, &mut Transform, &mut Visibility), Without<GroundPlum>>,
     mut bodies: Query<&mut Visibility, Without<Actor>>,
-    fruit: Query<(Entity, &GroundPlum, &Transform), Without<Actor>>,
+    fruit: Query<(Entity, &GroundPlum, &Transform, &SightActor), Without<Actor>>,
     flights: Query<Entity, With<FruitFlight>>,
     feedback: Query<Entity, With<Feedback>>,
 ) {
@@ -840,6 +910,13 @@ fn observe_turn(
             Visibility::Hidden
         };
         *visibility = visible;
+        if let Some(sight) = actor_sight(actor.kind, None) {
+            if visible == Visibility::Hidden {
+                commands.entity(entity).remove::<SightActor>();
+            } else {
+                commands.entity(entity).insert(sight);
+            }
+        }
         if let Ok(mut shadow) = bodies.get_mut(actor.shadow) {
             *shadow = visible;
         }
@@ -929,15 +1006,17 @@ fn observe_turn(
             );
         }
     }
-    for (entity, plum, transform) in &fruit {
+    let mut fruit_owners = 0u32;
+    for (entity, plum, transform, sight) in &fruit {
         if reset || state.area != Area::Town {
             commands.entity(entity).despawn();
         } else if state.fruit.contains(&plum.cell) {
+            fruit_owners |= 1 << (sight.id - FRUIT_OWNER_START);
             continue;
         } else if state.swallowed && plum.cell == beat.jelly {
             commands
                 .entity(entity)
-                .remove::<GroundPlum>()
+                .remove::<(GroundPlum, SightActor, SightPart, RenderLayers)>()
                 .insert(FruitFlight {
                     from: transform.translation,
                     to: ground(state.jelly) + Vec3::new(-0.15, 0.27, 0.05),
@@ -950,7 +1029,7 @@ fn observe_turn(
         } else if state.action == ActionKind::Gather {
             commands
                 .entity(entity)
-                .remove::<GroundPlum>()
+                .remove::<(GroundPlum, SightActor, SightPart, RenderLayers)>()
                 .insert(FruitFlight {
                     from: transform.translation,
                     to: ground(state.player) + Vec3::Y * 0.82,
@@ -966,7 +1045,7 @@ fn observe_turn(
     }
     if state.area == Area::Town {
         for &cell in &state.fruit {
-            if !reset && fruit.iter().any(|(_, plum, _)| plum.cell == cell) {
+            if !reset && fruit.iter().any(|(_, plum, _, _)| plum.cell == cell) {
                 continue;
             }
             let delay =
@@ -975,10 +1054,17 @@ fn observe_turn(
                 } else {
                     0.0
                 };
+            let slot = fruit_owners.trailing_ones();
+            assert!(
+                slot < FRUIT_OWNER_COUNT,
+                "ground fruit exceeds its gameplay limit"
+            );
+            fruit_owners |= 1 << slot;
             spawn_ground_fruit(
                 &mut commands,
                 &art,
                 cell,
+                FRUIT_OWNER_START + slot as u16,
                 delay,
                 state.action == ActionKind::Shake && !reset,
             );
@@ -1048,20 +1134,19 @@ fn animate_figures(
     time: Res<Time>,
     art: Res<FigureArt>,
     state: Res<Outing>,
-    mut actors: Query<(Entity, &mut Actor, &mut Transform)>,
+    mut actors: Query<(Entity, &mut Actor, &mut Transform, Option<&mut SightActor>)>,
     mut cards: Query<
         (
             &mut Mesh3d,
             &mut MeshMaterial3d<FigureMaterial>,
             &mut Transform,
             &mut Visibility,
-            Option<&mut TravelPose>,
         ),
         Without<Actor>,
     >,
     mut shadows: Query<&mut Transform, (Without<Actor>, Without<MeshMaterial3d<FigureMaterial>>)>,
 ) {
-    for (entity, mut actor, mut root) in &mut actors {
+    for (entity, mut actor, mut root, sight) in &mut actors {
         actor.age += time.delta_secs();
         if actor.dying && actor.age >= 1.05 {
             commands.entity(entity).despawn();
@@ -1183,13 +1268,24 @@ fn animate_figures(
                 )
             }
         };
+        if let Some(mut sight) = sight {
+            match actor.kind {
+                ActorKind::Jelly => {
+                    // The detached contact remains on the ground during a hop.
+                    sight.lift = -root.translation.y;
+                    sight.height = 0.593 + root.translation.y;
+                }
+                ActorKind::Moth => {
+                    // The contact stays grounded while the live card floats.
+                    sight.height = if actor.dying { 0.845 } else { 1.105 };
+                }
+                _ => {}
+            }
+        }
         for entity in [actor.card, actor.caster] {
-            if let Ok((mut mesh, mut material, mut transform, mut visibility, pose)) =
+            if let Ok((mut mesh, mut material, mut transform, mut visibility)) =
                 cards.get_mut(entity)
             {
-                if let Some(mut p) = pose {
-                    p.0 = sheet.contour_offset + frame as u32;
-                }
                 if mesh.0 != sheet.frames[frame] {
                     mesh.0 = sheet.frames[frame].clone();
                 }
