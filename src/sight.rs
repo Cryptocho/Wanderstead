@@ -5,8 +5,8 @@ mod geometry;
 
 use crate::{
     figures::PlayerVisual,
-    game::Outing,
     map::{self, Area},
+    scene::SceneState,
 };
 use bevy::{
     prelude::*,
@@ -228,7 +228,7 @@ fn static_hits(objects: &[Model], enter: &Corridor, keep: &Corridor, previous: &
 fn refresh(
     eye: Single<&GlobalTransform, With<Camera3d>>,
     player: Single<&GlobalTransform, With<PlayerVisual>>,
-    game: Res<Outing>,
+    game: Res<SceneState>,
     actors: Query<(&SightActor, &GlobalTransform, &InheritedVisibility)>,
     solids: Query<(&MovingSolid, &Aabb, &GlobalTransform, &InheritedVisibility)>,
     mut sight: ResMut<WorldSight>,
@@ -436,7 +436,7 @@ mod tests {
         let house = part(Area::Town, "Backdrop_11").0;
         let stall = part(Area::Town, "stall_-6.15_6.23").0;
         assert!(marked(&hits, house) && marked(&hits, stall));
-        assert!(!marked(&hits, part(Area::Town, "CopperKettle").0));
+        assert!(!marked(&hits, part(Area::Town, "WestBuilding").0));
         let ray = Ray3d::new(v.eye, Dir3::new(Vec3::new(-7., 0., 3.) - v.eye).unwrap());
         let mut s = WorldSight {
             last: Some((v, Area::Town, true)),

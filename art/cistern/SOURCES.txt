@@ -1,4 +1,4 @@
-Wanderstead / Copper Kettle — original cistern art
+HD-2D scene preview — original interior artwork
 
 Sources
 - Geometry, UV layouts, actual beveled masonry, fluted octagonal columns, raised aqueduct troughs, spring-keeper effigy, folded cloth, foliage, coffers, handwheel and pressure lids: original mesh artwork authored for this project in tools/make_cistern.py; Blender 4.5 LTS (bpy).

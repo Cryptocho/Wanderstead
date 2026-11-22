@@ -1,3 +1,7 @@
+Archived artwork for the removed playable-demo UI. The scene viewer does not
+load these textures or the font. The production scripts and UI runtime were
+removed; their original implementation remains in Git history.
+
 Wanderstead travel stationery
 
 Legacy breakfast illustrations, paper fibres, oak grain, leather binding and

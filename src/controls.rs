@@ -1,5 +1,5 @@
-use crate::{Frame, game::*, tileview::HoverTile};
-use bevy::{prelude::*, window::PrimaryWindow};
+use crate::{Frame, map::Area, scene::SceneState, tileview::HoverTile};
+use bevy::prelude::*;
 
 pub struct ControlsPlugin;
 
@@ -12,15 +12,16 @@ pub enum ControlsSet {
 
 impl Plugin for ControlsPlugin {
     fn build(&self, app: &mut App) {
-        app.configure_sets(
-            Update,
-            (ControlsSet::Keys, ControlsSet::Pointer)
-                .chain()
-                .in_set(Frame::Input),
-        )
-        .add_systems(Update, keys.in_set(ControlsSet::Keys))
-        .add_systems(Update, pointer.in_set(ControlsSet::Pointer))
-        .add_systems(Update, actions.in_set(Frame::Act));
+        app.init_resource::<Navigation>()
+            .configure_sets(
+                Update,
+                (ControlsSet::Keys, ControlsSet::Pointer)
+                    .chain()
+                    .in_set(Frame::Input),
+            )
+            .add_systems(Update, keys.in_set(ControlsSet::Keys))
+            .add_systems(Update, pointer.in_set(ControlsSet::Pointer))
+            .add_systems(Update, navigate.in_set(Frame::Act));
     }
 }
 
@@ -87,73 +88,76 @@ pub(crate) fn direction(k: &ButtonInput<KeyCode>) -> IVec2 {
     d.signum()
 }
 
+#[derive(Resource, Default)]
+struct Navigation {
+    manual: Option<IVec2>,
+    path: Vec<IVec2>,
+    step: usize,
+    area: Option<Area>,
+    next: f64,
+    toggle_area: bool,
+}
+
+impl Navigation {
+    fn cancel(&mut self) {
+        self.path.clear();
+        self.step = 0;
+        self.area = None;
+    }
+}
+
+fn movement_held(keys: &ButtonInput<KeyCode>) -> bool {
+    use KeyCode::*;
+    [
+        KeyW, KeyS, KeyA, KeyD, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Numpad1, Numpad2,
+        Numpad3, Numpad4, Numpad6, Numpad7, Numpad8, Numpad9,
+    ]
+    .into_iter()
+    .any(|code| keys.pressed(code))
+}
+
 fn keys(
-    k: Res<ButtonInput<KeyCode>>,
-    t: Res<Time<Real>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time<Real>>,
     mut held: Local<Held>,
-    mut ui: ResMut<Interface>,
-    mut intents: EventWriter<Intent>,
+    mut navigation: ResMut<Navigation>,
     mut quit: EventWriter<AppExit>,
 ) {
     use KeyCode::*;
-    if (k.pressed(ControlLeft) || k.pressed(ControlRight)) && k.just_pressed(KeyQ) {
+    if (keys.pressed(ControlLeft) || keys.pressed(ControlRight)) && keys.just_pressed(KeyQ) {
+        navigation.cancel();
         quit.write(AppExit::Success);
         return;
     }
-    if k.just_pressed(KeyH) {
-        ui.hud = !ui.hud;
+    let direction = direction(&keys);
+    let moving = movement_held(&keys);
+    let now = time.elapsed_secs_f64();
+    if keys.just_pressed(Escape) || keys.just_pressed(F6) {
+        navigation.cancel();
+        navigation.manual = None;
+        navigation.toggle_area = keys.just_pressed(F6);
+        held.pending = None;
+        held.dir = direction;
+        held.next = now + 0.29;
+        return;
     }
-    let mut command = None;
-    for (code, action) in [
-        (Escape, Intent::Cancel),
-        (KeyJ, Intent::Book),
-        (Tab, Intent::Book),
-        (KeyV, Intent::Look),
-        (KeyT, Intent::Toss),
-        (KeyQ, Intent::Brace),
-        (KeyF, Intent::Skill),
-        (KeyR, Intent::Drink),
-        (Space, Intent::Wait),
-        (Numpad5, Intent::Wait),
-        (KeyE, Intent::Interact),
-        (Enter, Intent::Interact),
-        (NumpadEnter, Intent::Interact),
-    ] {
-        if k.just_pressed(code) {
-            command = Some(action);
-            break;
-        }
+    if moving {
+        navigation.cancel();
     }
-    let d = direction(&k);
+    if direction == IVec2::ZERO && moving {
+        // Opposing held directions cancel, rather than releasing a pending tap.
+        held.pending = None;
+        held.dir = IVec2::ZERO;
+        return;
+    }
     let keypad = [
         Numpad1, Numpad2, Numpad3, Numpad4, Numpad6, Numpad7, Numpad8, Numpad9,
     ]
     .into_iter()
-    .any(|code| k.pressed(code));
-    if command.is_some() {
-        held.pending = None;
-        held.dir = d;
-        held.next = t.elapsed_secs_f64() + 0.29;
-    } else if d == IVec2::ZERO
-        && (keypad
-            || [
-                KeyW, KeyS, KeyA, KeyD, ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
-            ]
-            .into_iter()
-            .any(|code| k.pressed(code)))
-    {
-        // Opposing held directions cancel; this is not a released single-key tap.
-        held.pending = None;
-        held.dir = IVec2::ZERO;
-    } else if let Some(d) = held.sample(t.elapsed_secs_f64(), d, keypad) {
-        command = match (ui.page, d.x) {
-            (Page::Bowl | Page::Book | Page::Gear, -1) => Some(Intent::Less),
-            (Page::Bowl | Page::Book | Page::Gear, 1) => Some(Intent::More),
-            _ => Some(Intent::Dir(d)),
-        };
-    }
-    if let Some(i) = command {
-        intents.write(i);
+    .any(|code| keys.pressed(code));
+    navigation.manual = held.sample(now, direction, keypad);
+    if navigation.manual.is_some() {
+        navigation.cancel();
     }
 }
 
@@ -161,125 +165,67 @@ fn pointer(
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     hover: Res<HoverTile>,
-    window: Single<&Window, With<PrimaryWindow>>,
-    ui: Res<Interface>,
-    outing: Res<Outing>,
-    mut out: EventWriter<Intent>,
+    scene: Res<SceneState>,
+    time: Res<Time<Real>>,
+    mut navigation: ResMut<Navigation>,
 ) {
     if buttons.just_pressed(MouseButton::Right) {
-        out.write(Intent::Cancel);
+        navigation.cancel();
         return;
     }
     if !buttons.just_pressed(MouseButton::Left)
-        || !matches!(ui.page, Page::Roam | Page::Aim | Page::Look)
-        || keys.get_just_pressed().next().is_some()
+        || movement_held(&keys)
+        || keys.just_pressed(KeyCode::Escape)
+        || keys.just_pressed(KeyCode::F6)
+        || navigation.manual.is_some()
     {
         return;
     }
-    let Some(pos) = window.cursor_position() else {
-        return;
-    };
-    if crate::book::pointer_over_book(pos, window.resolution.size(), ui.page, ui.hud, outing.area) {
-        return;
-    }
-    if let Some(cell) = hover.cell {
-        out.write(Intent::Point(cell));
+    navigation.cancel();
+    if hover.cell.is_some() && !hover.path.is_empty() {
+        navigation.path.extend_from_slice(&hover.path);
+        navigation.area = Some(scene.area);
+        navigation.next = time.elapsed_secs_f64();
     }
 }
 
-#[derive(Default)]
-struct WalkTo {
-    dest: Option<IVec2>,
-    path: Vec<IVec2>,
-    next: f64,
-    single_step: bool,
-    confirmed_hazard: bool,
-    interaction: bool,
-    area: Option<crate::map::Area>,
-}
-
-fn actions(
-    mut list: EventReader<Intent>,
-    mut g: ResMut<Outing>,
-    mut ui: ResMut<Interface>,
-    mut route: Local<WalkTo>,
-    t: Res<Time<Real>>,
-    journal: Res<JournalFile>,
+fn navigate(
+    mut scene: ResMut<SceneState>,
+    mut navigation: ResMut<Navigation>,
+    time: Res<Time<Real>>,
 ) {
-    let revision = g.save_revision;
-    let now = t.elapsed_secs_f64();
-    let mut acted = false;
-    for &i in list.read() {
-        route.dest = None;
-        if acted {
-            continue;
-        }
-        if let Intent::Point(p) = i {
-            if ui.page == Page::Roam && !g.adjacent_object(p) {
-                if g.path_to(p, &mut route.path) && !route.path.is_empty() {
-                    route.dest = Some(p);
-                    route.single_step = g.threatened();
-                    route.confirmed_hazard = route.path.len() == 1;
-                    route.interaction = g.is_interactable(p);
-                    route.area = Some(g.area);
-                    route.next = now;
-                }
-                continue;
-            }
-            if matches!(ui.page, Page::Aim | Page::Look) {
-                // The hovered cell is already selected: one click confirms it.
-                ui.cursor = p;
-                g.act(&mut ui, Intent::Interact);
-                acted = true;
-                continue;
-            }
-        }
-        g.act(&mut ui, i);
-        acted = true;
+    if navigation.toggle_area {
+        navigation.toggle_area = false;
+        navigation.cancel();
+        scene.toggle_area();
+        return;
     }
-    if !acted
-        && let Some(target) = route.dest
-        && now >= route.next
-    {
-        if ui.page != Page::Roam
-            || route.area != Some(g.area)
-            || (route.interaction && !g.is_interactable(target))
-            || !g.path_to(target, &mut route.path)
-        {
-            route.dest = None;
-        } else if route.path.is_empty() {
-            route.dest = None;
-            if g.adjacent_object(target) {
-                g.act(&mut ui, Intent::Point(target));
-            }
-        } else if !route.single_step
-            && (g.threatened() || (g.danger_at(route.path[0]) && !route.confirmed_hazard))
-        {
-            route.dest = None;
-        } else {
-            let previous = g.player;
-            let area = g.area;
-            let hp = g.expedition.hp;
-            let d = route.path[0] - previous;
-            g.act(&mut ui, Intent::Dir(d));
-            route.next = now + 0.29;
-            if route.single_step
-                || g.area != area
-                || g.expedition.hp < hp
-                || g.player != previous + d
-                || g.action != ActionKind::Step
-                || ui.page != Page::Roam
-                || g.threatened()
-            {
-                route.dest = None;
-            }
-        }
+    if let Some(direction) = navigation.manual.take() {
+        navigation.cancel();
+        scene.step(direction);
+        return;
     }
-    if g.save_revision != revision
-        && let Err(e) = journal.save(&g)
-    {
-        error!("写入旅行手记失败：{e}");
-        g.notice = "手记没能存到磁盘，当前旅程仍然保留。";
+    if navigation.path.is_empty() {
+        return;
+    }
+    if navigation.area != Some(scene.area) {
+        navigation.cancel();
+        return;
+    }
+    let now = time.elapsed_secs_f64();
+    if now < navigation.next {
+        return;
+    }
+    let next = navigation.path[navigation.step];
+    let direction = next - scene.player;
+    if !scene.step(direction) {
+        navigation.cancel();
+        return;
+    }
+    navigation.step += 1;
+    navigation.next = now + 0.29;
+    if navigation.step == navigation.path.len() {
+        navigation.cancel();
     }
 }
 
@@ -346,17 +292,25 @@ mod tests {
     }
 
     fn click_app() -> App {
-        let mut g = Outing::new(vec![]);
-        g.player = IVec2::new(-2, 0);
-        g.fruit.clear();
         let mut app = App::new();
-        app.insert_resource(g)
-            .insert_resource(Interface::default())
-            .insert_resource(Time::<Real>::default())
-            .insert_resource(JournalFile::open(true))
-            .add_event::<Intent>()
-            .add_systems(Update, actions);
+        app.insert_resource(SceneState {
+            player: IVec2::new(-2, 0),
+            ..default()
+        })
+        .insert_resource(Time::<Real>::default())
+        .init_resource::<Navigation>()
+        .add_systems(Update, navigate);
         app
+    }
+
+    fn click(app: &mut App, target: IVec2) {
+        let mut path = Vec::new();
+        let scene = app.world().resource::<SceneState>();
+        assert!(scene.path_to(target, &mut path));
+        let area = scene.area;
+        let mut navigation = app.world_mut().resource_mut::<Navigation>();
+        navigation.path = path;
+        navigation.area = Some(area);
     }
 
     fn elapse(app: &mut App, seconds: f64) {
@@ -370,29 +324,28 @@ mod tests {
     fn click_walk_executes_the_previewed_shortest_diagonals_and_stops() {
         let mut app = click_app();
         let target = IVec2::new(0, -2);
-        app.world_mut().send_event(Intent::Point(target));
+        click(&mut app, target);
         app.update();
-        let g = app.world().resource::<Outing>();
-        assert_eq!((g.player, g.turn), (IVec2::new(-1, -1), 1));
+        let scene = app.world().resource::<SceneState>();
+        assert_eq!((scene.player, scene.movement), (IVec2::new(-1, -1), 1));
+        elapse(&mut app, 0.28);
+        assert_eq!(app.world().resource::<SceneState>().movement, 1);
+        elapse(&mut app, 0.02);
+        let scene = app.world().resource::<SceneState>();
+        assert_eq!((scene.player, scene.movement), (target, 2));
         elapse(&mut app, 0.30);
-        let g = app.world().resource::<Outing>();
-        assert_eq!((g.player, g.turn), (target, 2));
-        elapse(&mut app, 0.30);
-        assert_eq!(app.world().resource::<Outing>().turn, 2);
+        assert_eq!(app.world().resource::<SceneState>().movement, 2);
     }
 
     #[test]
-    fn new_keyboard_action_cancels_click_route_and_wait_spends_one_turn() {
+    fn manual_movement_cancels_the_click_route() {
         let mut app = click_app();
-        app.world_mut().send_event(Intent::Point(IVec2::new(0, -2)));
+        click(&mut app, IVec2::new(0, -2));
         app.update();
-        app.world_mut().send_event(Intent::Wait);
+        app.world_mut().resource_mut::<Navigation>().manual = Some(IVec2::NEG_X);
         elapse(&mut app, 0.30);
         elapse(&mut app, 0.30);
-        let g = app.world().resource::<Outing>();
-        assert_eq!(
-            (g.player, g.turn, g.action),
-            (IVec2::new(-1, -1), 2, ActionKind::Wait)
-        );
+        let scene = app.world().resource::<SceneState>();
+        assert_eq!((scene.player, scene.movement), (IVec2::new(-2, -1), 2));
     }
 }

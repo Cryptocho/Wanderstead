@@ -118,9 +118,9 @@ Qud 是远未来的科学奇幻世界：植物可以写史书，有智慧的洞�
 ### RPG Maker 的地图如何让人想走进去
 
 - [《Ara Fell》2016 年原版发布帖](https://forums.rpgmakerweb.com/threads/ara-fell.62857/)标明 RPG Maker 2003。看[城门](https://forums.rpgmakerweb.com/attachments/ygklam-png.39256/)和[河谷木桥](https://forums.rpgmakerweb.com/attachments/ydfflf-png.39255/)：旗帜、屋顶与岸边植被密，台阶和桥面却留空。人脚边的路宽还能数得出步数。原作让玩家跳、爬、游泳去找东西；本作借的是「看地形就想出发」，把行动改为在同一张图上点击、走格和交战。此处看的不是后来移植的增强版。
-- [ghosthunter 的《Grimm’s Hollow》](https://store.steampowered.com/app/1170880/Grimms_Hollow/)是[作者提交的 RPG Maker Game Jam 作品](https://itch.io/jam/2nd-rpg-maker-gotm-jam/rate/490743)。[镇上的店面](https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1170880/ss_eef37bf7518c77b4c34cd1b22ceadac6c74f7c4c.1920x1080.jpg)只用很少的颜色，柜台、店主和顾客的位置仍一眼就懂。短篇也给出完整的外出理由、补给、探索、交战与结尾。铜壶镇不借它的战斗界面：敌人预警哪一格，就在玩家脚下这张地图上回答。
+- [ghosthunter 的《Grimm’s Hollow》](https://store.steampowered.com/app/1170880/Grimms_Hollow/)是[作者提交的 RPG Maker Game Jam 作品](https://itch.io/jam/2nd-rpg-maker-gotm-jam/rate/490743)。[镇上的店面](https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1170880/ss_eef37bf7518c77b4c34cd1b22ceadac6c74f7c4c.1920x1080.jpg)只用很少的颜色，柜台、店主和顾客的位置仍一眼就懂。短篇也给出完整的外出理由、补给、探索、交战与结尾。
 
-本作据此制作了[泉市](visual/copper-square-study.webp)和[旧泉水廊](visual/spring-cistern-study.webp)两张新概念参照。原作实图只作研究；概念图定材质、明暗及构图，实际格数、脚点、道路与碰撞由两张 `.grid` 地图决定。
+据此保留了[室外广场](visual/copper-square-study.webp)和[室内遗迹](visual/spring-cistern-study.webp)两张概念参照。原作实图只作研究；概念图定材质、明暗及构图，实际格数、脚点、道路与碰撞由两张 `.grid` 地图决定。
 
 <a id="four-lenses"></a>
 

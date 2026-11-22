@@ -1,10 +1,6 @@
 //! Frame pacing, engine screenshots, and opt-in local desktop playtesting.
 use crate::{
-    daylight::Optics,
-    game::{Interface, Outing},
-    lens::LensState,
-    stage::PaletteState,
-    tileview::HoverTile,
+    daylight::Optics, lens::LensState, scene::SceneState, stage::PaletteState, tileview::HoverTile,
 };
 use bevy::{
     input::{
@@ -28,21 +24,19 @@ use std::{
 pub struct Options {
     qa: Option<PathBuf>,
     fps: Option<u16>,
-    pub ephemeral: bool,
 }
 impl Options {
     pub fn read() -> Result<Option<Self>, String> {
         let mut o = Self {
             qa: None,
             fps: None,
-            ephemeral: false,
         };
         let mut args = std::env::args_os().skip(1);
         while let Some(arg) = args.next() {
             match arg.to_str() {
                 Some("--help" | "-h") => {
                     println!(
-                        "铜壶镇 · 第一股泉水\n  cargo run --locked -- [--fps auto|100|50] [--fresh]\n  --fresh     从第一天开始，不读写手记\n  --qa PATH   启用本地桌面测试接口\n  左键点格走路、调查、交战；Q 守势，F 技艺，R 喝药，J 手记。H 切换常驻界面（默认隐藏）。滚轮或 +/- 变焦，Home 复位，F12 截图，Ctrl+Q 退出。"
+                        "HD-2D · 场景预览\n  cargo run --locked -- [--fps auto|100|50] [--qa PATH]\n  八向：WASD、方向键或数字键盘；左键点格走路；右键/Esc取消。\n  滚轮或 +/- 变焦；Home 复位；F6 切换场景；F7 像素层；F12 截图；Ctrl+Q 退出。"
                     );
                     return Ok(None);
                 }
@@ -53,7 +47,6 @@ impl Options {
                             .ok_or("--qa 需要 socket 路径")?,
                     );
                 }
-                Some("--fresh") => o.ephemeral = true,
                 Some("--fps") => {
                     o.fps = match args.next().as_deref().and_then(|a| a.to_str()) {
                         Some("100") => Some(100),
@@ -245,6 +238,7 @@ fn key(s: &str) -> Option<KeyCode> {
         "plus" => Equal,
         "minus" => Minus,
         "home" => Home,
+        "f6" => F6,
         "f7" => F7,
         "f10" => F10,
         "f12" => F12,
@@ -263,8 +257,7 @@ fn wire(
     wire: Res<Wire>,
     mut c: Commands,
     window: Single<(Entity, &mut Window, Option<&RawHandleWrapper>), With<PrimaryWindow>>,
-    game: Res<Outing>,
-    ui: Res<Interface>,
+    scene: Res<SceneState>,
     lens: Res<LensState>,
     look: (Res<PaletteState>, ResMut<Optics>),
     mut sight: ResMut<crate::sight::WorldSight>,
@@ -297,14 +290,7 @@ fn wire(
         .split_whitespace();
     let reply = match words.next() {
         Some("state") => {
-            json!({"day":game.day,"turn":game.turn,"player":game.player.to_array(),"facing":game.facing.to_array(),"jelly":game.jelly.to_array(),"target":game.target.map(|p|p.to_array()),"fruit":game.fruit.iter().map(|p|p.to_array()).collect::<Vec<_>>(),"bag":game.plums,"eaten":game.eaten,"shaken":game.tree_shaken,"meal":game.breakfast,"last":format!("{:?}",game.action),"history":game.history,"page":format!("{:?}",ui.page),"cursor":ui.cursor.to_array(),"hud":ui.hud,"filling":ui.filling,"notice":game.notice,"lens":{"zoom":lens.zoom,"pitch":lens.pitch_deg,"distance":lens.distance},"ink":palette.enabled,"window":[win.physical_width(),win.physical_height()],"present":format!("{:?}",win.present_mode),"native":raw.map(|r|format!("{:?}",r.get_window_handle())).and_then(|s|s.split(['(',' ']).next().map(str::to_owned)),"focus":win.focused,"fps_target":pace.hz})
-        }
-        Some("expedition") => {
-            let e = &game.expedition;
-            json!({"area":format!("{:?}",game.area),"hp":e.hp,"max_hp":e.max_hp,"tonics":e.tonics,"kit":format!("{:?}",e.kit),"quest":format!("{:?}",e.quest),
-                "beat":e.beat,"attempts":e.attempts,"kills":e.kills,"deaths":e.deaths,"retreats":e.retreats,"coins":e.loot,"banked":e.banked,"ready":e.skill_ready,
-                "chest":e.seal_open,"remedy":e.tonic_open,"enemies":e.enemies.iter().map(|a|json!([a.id,format!("{:?}",a.kind),a.pos.to_array(),a.hp,a.warn.map(|p|p.to_array())])).collect::<Vec<_>>(),
-                "hover":hover.cell.map(|p|p.to_array()),"path":hover.path.iter().map(|p|p.to_array()).collect::<Vec<_>>()})
+            json!({"area":format!("{:?}",scene.area),"player":scene.player.to_array(),"facing":scene.facing.to_array(),"movement":scene.movement,"hover":hover.cell.map(|p|p.to_array()),"path":hover.path.iter().map(|p|p.to_array()).collect::<Vec<_>>(),"lens":{"zoom":lens.zoom,"pitch":lens.pitch_deg,"distance":lens.distance},"ink":palette.enabled,"window":[win.physical_width(),win.physical_height()],"present":format!("{:?}",win.present_mode),"native":raw.map(|r|format!("{:?}",r.get_window_handle())).and_then(|s|s.split(['(',' ']).next().map(str::to_owned)),"focus":win.focused,"fps_target":pace.hz})
         }
         Some("optics") => {
             match (words.next(), words.next()) {
@@ -332,7 +318,7 @@ fn wire(
                 Some("off") => sight.enabled = false,
                 _ => {}
             }
-            sight.description(game.area)
+            sight.description(scene.area)
         }
         Some("pick") => {
             let point = words
@@ -340,20 +326,10 @@ fn wire(
                 .and_then(|v| v.parse::<f32>().ok())
                 .zip(words.next().and_then(|v| v.parse::<f32>().ok()))
                 .map(|(x, y)| Vec2::new(x, y));
-            let cell = point
-                .filter(|&p| {
-                    !crate::book::pointer_over_book(
-                        p,
-                        win.resolution.size(),
-                        ui.page,
-                        ui.hud,
-                        game.area,
-                    )
-                })
-                .and_then(|p| {
-                    let ray = camera.0.viewport_to_world(camera.1, p).ok()?;
-                    sight.pick(game.area, ray).map(|(cell, _)| cell)
-                });
+            let cell = point.and_then(|p| {
+                let ray = camera.0.viewport_to_world(camera.1, p).ok()?;
+                sight.pick(scene.area, ray).map(|(cell, _)| cell)
+            });
             json!(cell.map(|p| p.to_array()))
         }
         Some("project") => {
@@ -410,7 +386,7 @@ fn wire(
                 words.next().and_then(|s| s.parse().ok()),
                 words.next().and_then(|s| s.parse().ok()),
             ) {
-                // Feed Bevy UI hit testing without requesting a Wayland pointer warp.
+                // Feed the scene picker without requesting a Wayland pointer warp.
                 win.bypass_change_detection()
                     .set_cursor_position(Some(Vec2::new(x, y)));
                 json!(true)
@@ -477,7 +453,7 @@ fn wire(
             json!(true)
         }
         _ => {
-            json!({"error":"state/expedition/project/key/scroll/pointer/mouse/optics/measure/stats/capture/exit"})
+            json!({"error":"state/project/pick/key/scroll/pointer/mouse/sight/optics/measure/stats/capture/exit"})
         }
     };
     let _ = wire.sock.send_to(reply.to_string().as_bytes(), peer);

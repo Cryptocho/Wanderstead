@@ -1,4 +1,4 @@
-//! Original, lit pixel figures. State stays in `game`; these entities are presentation only.
+//! Original, lit pixel figures: a moving traveler and decorative scene ambience.
 //! Art/layout/provenance: art/figures/{contact-sheet.png,atlas-layout.json,RIGHTS.txt}.
 use bevy::{
     asset::RenderAssetUsages,
@@ -9,18 +9,16 @@ use bevy::{
         mesh::{Indices, MeshAabb},
         primitives::Aabb,
         render_resource::{AsBindGroup, PrimitiveTopology, ShaderRef},
-        view::{RenderLayers, VisibilitySystems},
+        view::RenderLayers,
     },
     transform::TransformSystem,
 };
 
-use crate::game::*;
 use crate::{
-    delve::{Enemy, EnemyKind},
     map::Area,
+    scene::{CISTERN_FIGURES, JELLY_POSITION, SceneState, ground},
+    sight::{SHADOW_LAYER, SightActor, SightPart},
 };
-
-use crate::sight::{SHADOW_LAYER, SightActor, SightPart};
 #[derive(Asset, AsBindGroup, TypePath, Clone, Debug)]
 struct FigureInk {
     #[texture(105)]
@@ -42,14 +40,12 @@ pub struct PlayerVisual;
 
 const BODY_PIXELS: f32 = 108.0;
 const TRAVEL_HEIGHT: f32 = 1.32;
-const FRUIT_OWNER_START: u16 = 800;
-const FRUIT_OWNER_COUNT: u32 = 32;
 const WALK_TIME: f32 = 0.28;
-const ACTION_TIME: f32 = 0.72;
-const THROW_DELAY: f32 = 0.25;
-const THROW_TIME: f32 = 0.66;
+const KEEPER_FOOT: Vec3 = Vec3::new(-5.0, 0.0, 3.0);
+const HERBALIST_FOOT: Vec3 = Vec3::new(6.0, 0.0, 2.0);
+const PLUM_CELL: IVec2 = IVec2::new(-3, 3);
 
-// Explicit key-pose holds, in presentation seconds. NPC work never consumes a turn.
+// Explicit key-pose holds, in presentation seconds.
 // End times match art/figures/trade-atlas-layout.json.
 const KEEPER_CYCLE: &[(f32, usize)] = &[
     (1.10, 0),
@@ -103,16 +99,13 @@ fn trade_frame(seconds: f32, cycle: &[(f32, usize)]) -> usize {
 impl Plugin for FiguresPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<FigureMaterial>::default())
-            .init_resource::<VisualBeat>()
             .add_systems(Startup, spawn_figures)
             .add_systems(
                 Update,
                 (
                     change_shelter,
-                    observe_turn,
+                    observe_scene,
                     animate_figures,
-                    animate_fruit,
-                    animate_feedback,
                     light_shadow_layer,
                 )
                     .chain()
@@ -124,12 +117,6 @@ impl Plugin for FiguresPlugin {
                     .after(crate::lens::LensSet)
                     .before(TransformSystem::TransformPropagate),
             );
-        if std::env::args_os().any(|arg| arg == "--qa") {
-            app.add_systems(
-                PostUpdate,
-                diagnose_figures.after(VisibilitySystems::CheckVisibility),
-            );
-        }
     }
 }
 
@@ -152,60 +139,17 @@ struct Actor {
     age: f32,
     moving: bool,
     facing: IVec2,
-    action: ActionKind,
-    swallowing: bool,
-    fed: bool,
+    area: Area,
     card: Entity,
     caster: Entity,
     shadow: Entity,
-    enemy_id: Option<u8>,
-    hp: u8,
-    warn: Option<IVec2>,
-    striking: bool,
-    dying: bool,
-    hurt: bool,
-    down: bool,
-    pips: Option<[Entity; 3]>,
 }
 
 #[derive(Component)]
 struct FigureCard;
 
 #[derive(Component)]
-struct GroundPlum {
-    cell: IVec2,
-    age: f32,
-    delay: f32,
-    falling: bool,
-}
-
-#[derive(Component)]
-struct FruitFlight {
-    from: Vec3,
-    to: Vec3,
-    age: f32,
-    delay: f32,
-    duration: f32,
-    arc: f32,
-    shrink: bool,
-}
-
-#[derive(Component)]
-struct Feedback {
-    age: f32,
-    duration: f32,
-    velocity: Vec3,
-}
-
-#[derive(Resource, Default)]
-struct VisualBeat {
-    initialized: bool,
-    day: u32,
-    turn: u32,
-    jelly: IVec2,
-    area: Option<Area>,
-    hp: u8,
-}
+struct GroundPlum;
 
 struct Sheet {
     frames: Vec<Handle<Mesh>>,
@@ -217,8 +161,6 @@ struct Sheet {
 struct FigureArt {
     walk: Sheet,
     diagonal: Sheet,
-    actions: Sheet,
-    combat: Sheet,
     sentry: Sheet,
     moth: Sheet,
     keeper: Sheet,
@@ -232,10 +174,6 @@ struct FigureArt {
     sole_material: Handle<StandardMaterial>,
     seated_material: Handle<StandardMaterial>,
     sun_caster_rotation: Quat,
-    spark: Handle<Mesh>,
-    hit_material: Handle<StandardMaterial>,
-    heal_material: Handle<StandardMaterial>,
-    harvest_material: Handle<StandardMaterial>,
 }
 
 /// Pixel (width/2,height-2) is the sole/base pivot. The empty two-pixel gutter
@@ -344,7 +282,7 @@ fn sheet(
 }
 
 fn change_shelter(
-    s: Res<Outing>,
+    s: Res<SceneState>,
     maps: Res<crate::stage::SkyShelter>,
     mut surfaces: ResMut<Assets<FigureMaterial>>,
     mut old: Local<Option<Area>>,
@@ -364,7 +302,7 @@ fn spawn_figures(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut skin: ResMut<Assets<FigureMaterial>>,
-    state: Res<Outing>,
+    state: Res<SceneState>,
     shelter: Res<crate::stage::SkyShelter>,
 ) {
     let human = Vec2::new(160.0, 128.0);
@@ -393,20 +331,6 @@ fn spawn_figures(
         ),
         diagonal: make(
             "figures/traveler-diagonal.png",
-            UVec2::splat(4),
-            human,
-            BODY_PIXELS,
-            TRAVEL_HEIGHT,
-        ),
-        actions: make(
-            "figures/traveler-actions.png",
-            UVec2::splat(4),
-            human,
-            BODY_PIXELS,
-            TRAVEL_HEIGHT,
-        ),
-        combat: make(
-            "figures/traveler-combat.png",
             UVec2::splat(4),
             human,
             BODY_PIXELS,
@@ -490,119 +414,81 @@ fn spawn_figures(
             cull_mode: None,
             ..default()
         }),
-        spark: meshes.add(Sphere::new(0.055)),
-        hit_material: materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.56, 0.24),
-            emissive: LinearRgba::new(1.8, 0.42, 0.08, 1.0),
-            unlit: true,
-            ..default()
-        }),
-        heal_material: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.36, 1.0, 0.70),
-            emissive: LinearRgba::new(0.14, 0.8, 0.42, 1.0),
-            unlit: true,
-            ..default()
-        }),
-        harvest_material: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.90, 0.69, 0.98),
-            emissive: LinearRgba::new(0.55, 0.26, 0.7, 1.0),
-            unlit: true,
-            ..default()
-        }),
     };
-    for (kind, cell, facing) in [
-        (ActorKind::Traveler, state.player, state.facing),
-        (ActorKind::Keeper, KEEPER, IVec2::X),
-        (ActorKind::Herbalist, crate::map::APOTHECARY, IVec2::NEG_X),
-        (ActorKind::Worker, IVec2::new(8, -6), IVec2::NEG_Y),
-        (ActorKind::Jelly, state.jelly, state.jelly_facing),
+    spawn_actor(
+        &mut commands,
+        &art,
+        ActorKind::Traveler,
+        ground(state.player),
+        state.facing,
+        None,
+        state.area,
+    );
+    for (kind, foot, facing, owner) in [
+        (ActorKind::Keeper, KEEPER_FOOT, IVec2::X, 768),
+        (ActorKind::Herbalist, HERBALIST_FOOT, IVec2::NEG_X, 769),
+        (ActorKind::Worker, WORKER_FOOT, IVec2::NEG_Y, 770),
+        (ActorKind::Jelly, ground(JELLY_POSITION), IVec2::X, 771),
     ] {
-        spawn_actor(&mut commands, &art, kind, cell, facing, None, state.area);
-    }
-    for enemy in &state.expedition.enemies {
         spawn_actor(
             &mut commands,
             &art,
-            enemy_kind(enemy),
-            enemy.pos,
-            state.player - enemy.pos,
-            Some(enemy),
+            kind,
+            foot,
+            facing,
+            Some(owner),
             state.area,
         );
     }
-    if state.area == Area::Town {
-        for (i, &cell) in state.fruit.iter().enumerate() {
-            spawn_ground_fruit(
-                &mut commands,
-                &art,
-                cell,
-                FRUIT_OWNER_START + i as u16,
-                0.0,
-                false,
-            );
-        }
+    for (i, cell) in CISTERN_FIGURES.into_iter().enumerate() {
+        let kind = if i == 0 || i == 2 {
+            ActorKind::Sentry
+        } else {
+            ActorKind::Moth
+        };
+        spawn_actor(
+            &mut commands,
+            &art,
+            kind,
+            ground(cell),
+            IVec2::NEG_X,
+            Some(772 + i as u16),
+            state.area,
+        );
     }
+    spawn_plum(&mut commands, &art, state.area);
     commands.insert_resource(art);
 }
 
-fn enemy_kind(enemy: &Enemy) -> ActorKind {
-    match enemy.kind {
-        EnemyKind::Sentry => ActorKind::Sentry,
-        EnemyKind::Moth => ActorKind::Moth,
-    }
-}
-
-// Alpha extents cover every authored pose, including held props and the worker's
-// cat. Enemy volumes also contain their health pips; contacts share ownership.
-fn actor_sight(kind: ActorKind, enemy_id: Option<u8>) -> Option<SightActor> {
-    let (id, area, half_width, height, lift) = match kind {
+// Alpha extents include held props and the seated worker's cat. Contacts share
+// ownership; the separate shadow casters stay outside camera occlusion.
+fn actor_sight(kind: ActorKind, owner: Option<u16>) -> Option<SightActor> {
+    let (area, half_width, height) = match kind {
         ActorKind::Traveler => return None,
-        ActorKind::Keeper => (768, Area::Town, 0.374, 1.30, 0.0),
-        ActorKind::Herbalist => (769, Area::Town, 0.425, 1.31, 0.0),
-        ActorKind::Worker => (770, Area::Town, 0.691, 1.08, 0.0),
-        ActorKind::Jelly => (771, Area::Town, 0.395, 0.593, 0.0),
-        ActorKind::Sentry => (
-            772 + u16::from(enemy_id.expect("enemy identity")),
-            Area::Cistern,
-            0.745,
-            1.52,
-            0.0,
-        ),
-        ActorKind::Moth => (
-            772 + u16::from(enemy_id.expect("enemy identity")),
-            Area::Cistern,
-            0.626,
-            1.105,
-            0.0,
-        ),
+        ActorKind::Keeper => (Area::Town, 0.374, 1.30),
+        ActorKind::Herbalist => (Area::Town, 0.425, 1.31),
+        ActorKind::Worker => (Area::Town, 0.691, 1.08),
+        ActorKind::Jelly => (Area::Town, 0.395, 0.593),
+        ActorKind::Sentry => (Area::Cistern, 0.745, 1.34),
+        ActorKind::Moth => (Area::Cistern, 0.626, 1.105),
     };
     Some(SightActor {
-        id,
+        id: owner.expect("decorative figure ownership"),
         area,
         half_width,
         height,
-        lift,
+        lift: 0.0,
     })
 }
 
 impl SightActor {
-    /// Interaction facts stay on logical cells while render roots interpolate.
-    pub(crate) fn pick_cell(&self, game: &Outing, foot: Vec3) -> Option<IVec2> {
-        if self.area != game.area {
+    /// Decorative cards pick their authored world feet, including the seated worker.
+    pub(crate) fn pick_cell(&self, state: &SceneState, foot: Vec3) -> Option<IVec2> {
+        if self.area != state.area {
             return None;
         }
         match self.id {
-            768 => Some(KEEPER),
-            769 => Some(crate::map::APOTHECARY),
-            770 => None,
-            771 => Some(game.jelly),
-            772..=776 => game
-                .expedition
-                .enemies
-                .iter()
-                .find(|enemy| u16::from(enemy.id) + 772 == self.id && enemy.hp > 0)
-                .map(|enemy| enemy.pos),
-            800..=831 => Some(IVec2::new(foot.x.round() as i32, foot.z.round() as i32)),
+            768..=776 | 800..=831 => Some(IVec2::new(foot.x.round() as i32, foot.z.round() as i32)),
             _ => None,
         }
     }
@@ -612,31 +498,28 @@ fn spawn_actor(
     commands: &mut Commands,
     art: &FigureArt,
     kind: ActorKind,
-    cell: IVec2,
+    foot: Vec3,
     facing: IVec2,
-    enemy: Option<&Enemy>,
-    area: Area,
+    owner: Option<u16>,
+    active_area: Area,
 ) {
-    let body = match kind {
-        ActorKind::Traveler => &art.walk,
-        ActorKind::Keeper => &art.keeper,
-        ActorKind::Herbalist => &art.herbalist,
-        ActorKind::Worker => &art.worker,
-        ActorKind::Jelly => &art.jelly,
-        ActorKind::Sentry => &art.sentry,
-        ActorKind::Moth => &art.moth,
-    };
-    let index = if kind == ActorKind::Traveler {
-        direction_row(facing) * 4 + 1
+    let (body, index) = if kind == ActorKind::Traveler {
+        walking(art, facing, 1)
     } else {
-        0
+        let body = match kind {
+            ActorKind::Keeper => &art.keeper,
+            ActorKind::Herbalist => &art.herbalist,
+            ActorKind::Worker => &art.worker,
+            ActorKind::Jelly => &art.jelly,
+            ActorKind::Sentry => &art.sentry,
+            ActorKind::Moth => &art.moth,
+            ActorKind::Traveler => unreachable!(),
+        };
+        (body, 0)
     };
-    let foot = if kind == ActorKind::Worker {
-        WORKER_FOOT
-    } else {
-        ground(cell)
-    };
-    let visible = if kind == ActorKind::Traveler || (enemy.is_some() == (area == Area::Cistern)) {
+    let sight = actor_sight(kind, owner);
+    let area = sight.map_or(active_area, |sight| sight.area);
+    let visible = if kind == ActorKind::Traveler || area == active_area {
         Visibility::Inherited
     } else {
         Visibility::Hidden
@@ -647,11 +530,8 @@ fn spawn_actor(
     if kind == ActorKind::Traveler {
         commands.entity(root).insert(PlayerVisual);
     }
-    let sight = actor_sight(kind, enemy.map(|enemy| enemy.id));
-    if visible != Visibility::Hidden {
-        if let Some(sight) = sight {
-            commands.entity(root).insert(sight);
-        }
+    if let Some(sight) = sight {
+        commands.entity(root).insert(sight);
     }
     let card = commands
         .spawn((
@@ -713,389 +593,90 @@ fn spawn_actor(
     if let Some(sight) = sight {
         commands.entity(shadow).insert(SightPart(sight.id));
     }
-    let pips = enemy.map(|enemy| {
-        let pips: [Entity; 3] = std::array::from_fn(|i| {
-            commands
-                .spawn((
-                    Mesh3d(art.spark.clone()),
-                    MeshMaterial3d(art.hit_material.clone()),
-                    Transform::from_xyz(
-                        (i as f32 - 1.0) * 0.13,
-                        if kind == ActorKind::Moth { 1.02 } else { 1.48 },
-                        0.0,
-                    )
-                    .with_scale(Vec3::splat(0.60)),
-                    if i < enemy.hp as usize {
-                        Visibility::Inherited
-                    } else {
-                        Visibility::Hidden
-                    },
-                    NotShadowCaster,
-                    NotShadowReceiver,
-                ))
-                .id()
-        });
-        commands.entity(root).add_children(&pips);
-        if let Some(sight) = sight {
-            for pip in pips {
-                commands.entity(pip).insert(SightPart(sight.id));
-            }
-        }
-        pips
-    });
     commands.entity(root).insert(Actor {
         kind,
         from: foot,
         to: foot,
-        age: ACTION_TIME,
+        age: WALK_TIME,
         moving: false,
         facing,
-        action: ActionKind::Start,
-        swallowing: false,
-        fed: false,
+        area,
         card,
         caster,
         shadow,
-        enemy_id: enemy.map(|e| e.id),
-        hp: enemy.map_or(0, |e| e.hp),
-        warn: enemy.and_then(|e| e.warn),
-        striking: false,
-        dying: false,
-        hurt: false,
-        down: false,
-        pips,
     });
 }
 
-fn burst(commands: &mut Commands, art: &FigureArt, at: Vec3, material: &Handle<StandardMaterial>) {
-    for i in 0..7 {
-        let angle = i as f32 * std::f32::consts::TAU / 7.0;
-        commands.spawn((
-            Mesh3d(art.spark.clone()),
-            MeshMaterial3d(material.clone()),
-            Transform::from_translation(at),
-            Feedback {
-                age: 0.0,
-                duration: 0.60,
-                velocity: Vec3::new(
-                    angle.cos() * 0.65,
-                    0.75 + (i % 3) as f32 * 0.12,
-                    angle.sin() * 0.42,
-                ),
-            },
-            NotShadowCaster,
-            NotShadowReceiver,
-        ));
-    }
-}
-
-fn spawn_ground_fruit(
-    commands: &mut Commands,
-    art: &FigureArt,
-    cell: IVec2,
-    owner: u16,
-    delay: f32,
-    falling: bool,
-) {
+fn spawn_plum(commands: &mut Commands, art: &FigureArt, area: Area) {
     commands.spawn((
-        GroundPlum {
-            cell,
-            age: 0.0,
-            delay,
-            falling,
-        },
+        GroundPlum,
         FigureCard,
         SightActor {
-            id: owner,
+            id: 800,
             area: Area::Town,
             half_width: 0.096,
             height: 0.128,
             lift: 0.0,
         },
-        SightPart(owner),
+        SightPart(800),
         Mesh3d(art.plum.frames[0].clone()),
         MeshMaterial3d(art.plum.material.clone()),
         art.plum.bounds,
-        Transform::from_translation(ground(cell) + Vec3::Y * 0.02),
-        if delay > 0.0 || falling {
-            Visibility::Hidden
-        } else {
+        Transform::from_translation(ground(PLUM_CELL) + Vec3::Y * 0.02),
+        if area == Area::Town {
             Visibility::Inherited
+        } else {
+            Visibility::Hidden
         },
     ));
 }
 
-fn observe_turn(
-    mut commands: Commands,
-    state: Res<Outing>,
-    art: Res<FigureArt>,
-    mut beat: ResMut<VisualBeat>,
-    mut actors: Query<(Entity, &mut Actor, &mut Transform, &mut Visibility), Without<GroundPlum>>,
-    mut bodies: Query<&mut Visibility, Without<Actor>>,
-    fruit: Query<(Entity, &GroundPlum, &Transform, &SightActor), Without<Actor>>,
-    flights: Query<Entity, With<FruitFlight>>,
-    feedback: Query<Entity, With<Feedback>>,
+fn observe_scene(
+    state: Res<SceneState>,
+    mut previous: Local<Option<(Area, u64)>>,
+    mut actors: Query<(&mut Actor, &mut Transform, &mut Visibility)>,
+    mut contacts: Query<&mut Visibility, (Without<Actor>, Without<GroundPlum>)>,
+    mut plums: Query<&mut Visibility, (With<GroundPlum>, Without<Actor>)>,
 ) {
-    if !beat.initialized {
-        beat.initialized = true;
-        beat.day = state.day;
-        beat.turn = state.turn;
-        beat.jelly = state.jelly;
-        beat.area = Some(state.area);
-        beat.hp = state.expedition.hp;
+    let current = (state.area, state.movement);
+    if *previous == Some(current) {
         return;
     }
-    if beat.day == state.day && beat.turn == state.turn && beat.area == Some(state.area) {
-        return;
-    }
-    let new_day = beat.day != state.day;
-    let reset = new_day || beat.area != Some(state.area);
-    for (entity, mut actor, mut transform, mut visibility) in &mut actors {
-        if let Some(id) = actor.enemy_id {
-            if reset || state.area != Area::Cistern {
-                commands.entity(entity).despawn();
-                commands.entity(actor.shadow).despawn();
-                continue;
-            }
-            if let Some(enemy) = state
-                .expedition
-                .enemies
-                .iter()
-                .find(|e| e.id == id && e.hp > 0)
-            {
-                let hurt = enemy.hp < actor.hp;
-                // A hook cancels the warning before it can strike.
-                actor.striking = actor.warn.is_some()
-                    && enemy.warn.is_none()
-                    && !(hurt && state.action == ActionKind::Skill);
-                if let Some(target) = actor.warn.or(enemy.warn) {
-                    actor.facing = target - enemy.pos;
-                } else if actor.to != ground(enemy.pos) {
-                    actor.facing = enemy.pos - IVec2::new(actor.to.x as i32, actor.to.z as i32);
-                }
-                actor.from = transform.translation;
-                actor.from.y = 0.0;
-                actor.to = ground(enemy.pos);
-                actor.moving = actor.from.distance_squared(actor.to) > 0.001;
-                actor.warn = enemy.warn;
-                actor.hp = enemy.hp;
-                actor.hurt = hurt;
-                actor.age = 0.0;
-            } else if !actor.dying {
-                actor.dying = true;
-                actor.warn = None;
-                actor.hp = 0;
-                actor.age = 0.0;
-                actor.moving = false;
-                actor.to = ground(IVec2::new(actor.to.x as i32, actor.to.z as i32));
-                actor.from = actor.to;
-                transform.translation = actor.to;
-            }
-            if let Some(pips) = actor.pips {
-                for (i, pip) in pips.into_iter().enumerate() {
-                    if let Ok(mut visible) = bodies.get_mut(pip) {
-                        *visible = if i < actor.hp as usize {
-                            Visibility::Inherited
-                        } else {
-                            Visibility::Hidden
-                        };
-                    }
-                }
-            }
-            continue;
-        }
-        let visible = if actor.kind == ActorKind::Traveler || state.area == Area::Town {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        *visibility = visible;
-        if let Some(sight) = actor_sight(actor.kind, None) {
-            if visible == Visibility::Hidden {
-                commands.entity(entity).remove::<SightActor>();
-            } else {
-                commands.entity(entity).insert(sight);
+    let reset = previous.is_none_or(|(area, _)| area != state.area);
+    for (mut actor, mut transform, mut visibility) in &mut actors {
+        if actor.kind == ActorKind::Traveler {
+            let target = ground(state.player);
+            actor.from = if reset { target } else { transform.translation };
+            actor.to = target;
+            actor.moving = !reset && actor.from.distance_squared(target) > 0.001;
+            actor.age = if actor.moving { 0.0 } else { WALK_TIME };
+            actor.facing = state.facing;
+            actor.area = state.area;
+            if reset {
+                transform.translation = target;
             }
         }
-        if let Ok(mut shadow) = bodies.get_mut(actor.shadow) {
-            *shadow = visible;
-        }
-        if matches!(
-            actor.kind,
-            ActorKind::Keeper | ActorKind::Herbalist | ActorKind::Worker
-        ) {
-            continue;
-        }
-        let traveler = actor.kind == ActorKind::Traveler;
-        let (cell, facing) = if traveler {
-            (state.player, state.facing)
-        } else {
-            (state.jelly, state.jelly_facing)
-        };
-        let target = ground(cell);
-        actor.from = if reset { target } else { transform.translation };
-        actor.to = target;
-        actor.moving = !reset && actor.from.distance_squared(target) > 0.001;
-        actor.age = if reset { ACTION_TIME } else { 0.0 };
-        actor.action = state.action;
-        actor.facing = facing;
-        actor.swallowing = !reset && state.swallowed;
-        actor.fed = state.eaten > 0;
-        actor.hurt = traveler && !reset && state.expedition.hp < beat.hp;
-        actor.down = traveler && state.expedition.hp == 0;
         if reset {
-            transform.translation = target;
-        }
-    }
-    if state.area == Area::Cistern {
-        for enemy in &state.expedition.enemies {
-            if reset
-                || !actors
-                    .iter()
-                    .any(|(_, actor, _, _)| actor.enemy_id == Some(enemy.id))
-            {
-                spawn_actor(
-                    &mut commands,
-                    &art,
-                    enemy_kind(enemy),
-                    enemy.pos,
-                    state.player - enemy.pos,
-                    Some(enemy),
-                    state.area,
-                );
+            *visibility = if actor.area == state.area {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+            if let Ok(mut contact) = contacts.get_mut(actor.shadow) {
+                *contact = *visibility;
             }
         }
     }
     if reset {
-        for entity in &flights {
-            commands.entity(entity).despawn();
-        }
-        for entity in &feedback {
-            commands.entity(entity).despawn();
-        }
-    } else {
-        if let Some(cell) = state.expedition.target_hit {
-            burst(
-                &mut commands,
-                &art,
-                ground(cell) + Vec3::Y * 0.70,
-                &art.hit_material,
-            );
-        }
-        if state.expedition.hp < beat.hp {
-            burst(
-                &mut commands,
-                &art,
-                ground(state.player) + Vec3::Y * 0.74,
-                &art.hit_material,
-            );
-        } else if state.expedition.hp > beat.hp || state.action == ActionKind::Eat {
-            burst(
-                &mut commands,
-                &art,
-                ground(state.player) + Vec3::Y * 0.70,
-                &art.heal_material,
-            );
-        }
-        if state.action == ActionKind::Gather {
-            burst(
-                &mut commands,
-                &art,
-                ground(state.player) + Vec3::Y * 0.65,
-                &art.harvest_material,
-            );
+        for mut visibility in &mut plums {
+            *visibility = if state.area == Area::Town {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
         }
     }
-    let mut fruit_owners = 0u32;
-    for (entity, plum, transform, sight) in &fruit {
-        if reset || state.area != Area::Town {
-            commands.entity(entity).despawn();
-        } else if state.fruit.contains(&plum.cell) {
-            fruit_owners |= 1 << (sight.id - FRUIT_OWNER_START);
-            continue;
-        } else if state.swallowed && plum.cell == beat.jelly {
-            commands
-                .entity(entity)
-                .remove::<(GroundPlum, SightActor, SightPart, RenderLayers)>()
-                .insert(FruitFlight {
-                    from: transform.translation,
-                    to: ground(state.jelly) + Vec3::new(-0.15, 0.27, 0.05),
-                    age: 0.0,
-                    delay: 0.06,
-                    duration: 0.30,
-                    arc: 0.10,
-                    shrink: true,
-                });
-        } else if state.action == ActionKind::Gather {
-            commands
-                .entity(entity)
-                .remove::<(GroundPlum, SightActor, SightPart, RenderLayers)>()
-                .insert(FruitFlight {
-                    from: transform.translation,
-                    to: ground(state.player) + Vec3::Y * 0.82,
-                    age: 0.0,
-                    delay: 0.18,
-                    duration: 0.30,
-                    arc: 0.20,
-                    shrink: true,
-                });
-        } else {
-            commands.entity(entity).despawn();
-        }
-    }
-    if state.area == Area::Town {
-        for &cell in &state.fruit {
-            if !reset && fruit.iter().any(|(_, plum, _, _)| plum.cell == cell) {
-                continue;
-            }
-            let delay =
-                if matches!(state.action, ActionKind::Throw { to, .. } if to == cell) && !reset {
-                    THROW_DELAY + THROW_TIME
-                } else {
-                    0.0
-                };
-            let slot = fruit_owners.trailing_ones();
-            assert!(
-                slot < FRUIT_OWNER_COUNT,
-                "ground fruit exceeds its gameplay limit"
-            );
-            fruit_owners |= 1 << slot;
-            spawn_ground_fruit(
-                &mut commands,
-                &art,
-                cell,
-                FRUIT_OWNER_START + slot as u16,
-                delay,
-                state.action == ActionKind::Shake && !reset,
-            );
-        }
-        if !reset {
-            if let ActionKind::Throw { from, to } = state.action {
-                commands.spawn((
-                    FigureCard,
-                    FruitFlight {
-                        from: ground(from) + Vec3::Y * 1.03,
-                        to: ground(to) + Vec3::Y * 0.025,
-                        age: 0.0,
-                        delay: THROW_DELAY,
-                        duration: THROW_TIME,
-                        arc: 2.0,
-                        shrink: false,
-                    },
-                    Mesh3d(art.plum.frames[0].clone()),
-                    MeshMaterial3d(art.plum.material.clone()),
-                    art.plum.bounds,
-                    Transform::default(),
-                    Visibility::Hidden,
-                ));
-            }
-        }
-    }
-    beat.day = state.day;
-    beat.turn = state.turn;
-    beat.jelly = state.jelly;
-    beat.area = Some(state.area);
-    beat.hp = state.expedition.hp;
+    *previous = Some(current);
 }
 
 fn direction_row(direction: IVec2) -> usize {
@@ -1130,85 +711,37 @@ fn actor_contact_size(kind: ActorKind) -> Vec2 {
 }
 
 fn animate_figures(
-    mut commands: Commands,
     time: Res<Time>,
     art: Res<FigureArt>,
-    state: Res<Outing>,
-    mut actors: Query<(Entity, &mut Actor, &mut Transform, Option<&mut SightActor>)>,
+    state: Res<SceneState>,
+    mut actors: Query<(&mut Actor, &mut Transform)>,
     mut cards: Query<
         (
             &mut Mesh3d,
             &mut MeshMaterial3d<FigureMaterial>,
             &mut Transform,
-            &mut Visibility,
         ),
         Without<Actor>,
     >,
     mut shadows: Query<&mut Transform, (Without<Actor>, Without<MeshMaterial3d<FigureMaterial>>)>,
 ) {
-    for (entity, mut actor, mut root, sight) in &mut actors {
-        actor.age += time.delta_secs();
-        if actor.dying && actor.age >= 1.05 {
-            commands.entity(entity).despawn();
-            commands.entity(actor.shadow).despawn();
+    for (mut actor, mut root) in &mut actors {
+        if actor.area != state.area {
             continue;
         }
-        let mut mirror = false;
         let (sheet, frame) = match actor.kind {
             ActorKind::Traveler => {
-                let t = (actor.age / WALK_TIME).clamp(0.0, 1.0);
+                actor.age = (actor.age + time.delta_secs()).min(WALK_TIME);
+                let t = actor.age / WALK_TIME;
                 let smooth = t * t * (3.0 - 2.0 * t);
                 root.translation = actor.from.lerp(actor.to, smooth);
-                if actor.down {
-                    (&art.combat, 8 + ((actor.age / 0.66 * 4.0) as usize).min(3))
-                } else if actor.hurt && (0.32..0.64).contains(&actor.age) {
-                    mirror = actor.facing.x > 0;
-                    (
-                        &art.combat,
-                        8 + (((actor.age - 0.32) / 0.16) as usize).min(1),
-                    )
-                } else if actor.age < ACTION_TIME {
-                    let combat_row = match actor.action {
-                        ActionKind::Strike | ActionKind::Skill => Some(0),
-                        ActionKind::Brace => Some(1),
-                        ActionKind::Drink => Some(3),
-                        _ => None,
-                    };
-                    let row = match actor.action {
-                        ActionKind::Gather => Some(0),
-                        ActionKind::Shake => Some(1),
-                        ActionKind::Throw { .. } => Some(2),
-                        ActionKind::Eat => Some(3),
-                        _ => None,
-                    };
-                    if let Some(row) = combat_row {
-                        mirror = actor.facing.x > 0;
-                        (
-                            &art.combat,
-                            row * 4 + ((actor.age / ACTION_TIME * 4.0) as usize).min(3),
-                        )
-                    } else if actor.action == ActionKind::Hurt {
-                        (&art.combat, 8 + ((actor.age / 0.18) as usize).min(1))
-                    } else if let Some(row) = row {
-                        mirror = match actor.action {
-                            ActionKind::Throw { from, to } => to.x > from.x,
-                            _ => actor.facing.x > 0,
-                        };
-                        (
-                            &art.actions,
-                            row * 4 + ((actor.age / ACTION_TIME * 4.0) as usize).min(3),
-                        )
-                    } else {
-                        let step = if actor.moving && t < 1.0 {
-                            ((actor.age / WALK_TIME * 4.0) as usize).min(3)
-                        } else {
-                            1
-                        };
-                        walking(&art, actor.facing, step)
-                    }
+                let step = if actor.moving && t < 1.0 {
+                    ((t * 4.0) as usize).min(3)
                 } else {
-                    walking(&art, actor.facing, 1)
-                }
+                    actor.moving = false;
+                    1
+                };
+                walking(&art, actor.facing, step)
             }
             ActorKind::Herbalist => (
                 &art.herbalist,
@@ -1216,188 +749,37 @@ fn animate_figures(
             ),
             ActorKind::Keeper => (&art.keeper, trade_frame(time.elapsed_secs(), KEEPER_CYCLE)),
             ActorKind::Worker => (&art.worker, trade_frame(time.elapsed_secs(), WORKER_CYCLE)),
-            ActorKind::Jelly => {
-                let t = ((actor.age - 0.10) / 0.34).clamp(0.0, 1.0);
-                let smooth = t * t * (3.0 - 2.0 * t);
-                root.translation = actor.from.lerp(actor.to, smooth);
-                if actor.moving && t > 0.0 && t < 1.0 {
-                    root.translation.y += 0.24 * (std::f32::consts::PI * t).sin();
-                }
-                let frame = if actor.swallowing {
-                    4 + ((actor.age / 0.70 * 4.0) as usize).min(3)
-                } else if actor.moving && actor.age < 0.48 {
-                    if actor.age < 0.10 {
-                        1
-                    } else if t < 0.75 {
-                        2
-                    } else {
-                        3
-                    }
-                } else if actor.fed {
-                    7
-                } else {
-                    0
-                };
-                mirror = if frame >= 4 {
-                    actor.facing.x > 0
-                } else {
-                    actor.facing.x < 0
-                };
-                (&art.jelly, frame)
-            }
-            ActorKind::Sentry | ActorKind::Moth => {
-                let t = (actor.age / WALK_TIME).clamp(0.0, 1.0);
-                root.translation = actor.from.lerp(actor.to, t * t * (3.0 - 2.0 * t));
-                mirror = actor.facing.x > 0;
-                let frame = if actor.dying {
-                    12 + ((actor.age / 0.72 * 4.0) as usize).min(3)
-                } else if actor.striking && actor.age < 0.64 {
-                    8 + ((actor.age / 0.64 * 4.0) as usize).min(3)
-                } else if actor.warn.is_some() {
-                    4 + ((actor.age / 0.48 * 4.0) as usize).min(3)
-                } else {
-                    ((time.elapsed_secs() / 0.18) as usize) % 4
-                };
-                (
-                    if actor.kind == ActorKind::Sentry {
-                        &art.sentry
-                    } else {
-                        &art.moth
-                    },
-                    frame,
-                )
-            }
+            ActorKind::Jelly => (&art.jelly, 0),
+            ActorKind::Sentry => (&art.sentry, ((time.elapsed_secs() / 0.18) as usize) % 4),
+            ActorKind::Moth => (&art.moth, ((time.elapsed_secs() / 0.18) as usize) % 4),
         };
-        if let Some(mut sight) = sight {
-            match actor.kind {
-                ActorKind::Jelly => {
-                    // The detached contact remains on the ground during a hop.
-                    sight.lift = -root.translation.y;
-                    sight.height = 0.593 + root.translation.y;
-                }
-                ActorKind::Moth => {
-                    // The contact stays grounded while the live card floats.
-                    sight.height = if actor.dying { 0.845 } else { 1.105 };
-                }
-                _ => {}
-            }
-        }
         for entity in [actor.card, actor.caster] {
-            if let Ok((mut mesh, mut material, mut transform, mut visibility)) =
-                cards.get_mut(entity)
-            {
+            if let Ok((mut mesh, mut material, mut transform)) = cards.get_mut(entity) {
                 if mesh.0 != sheet.frames[frame] {
                     mesh.0 = sheet.frames[frame].clone();
                 }
                 if material.0 != sheet.material {
                     material.0 = sheet.material.clone();
                 }
-                transform.scale.x = if mirror { -1.0 } else { 1.0 };
                 if entity == actor.caster {
-                    transform.rotation = if state.area == Area::Town {
+                    transform.rotation = if actor.area == Area::Town {
                         art.sun_caster_rotation
                     } else {
                         Quat::IDENTITY
                     };
                 }
-                transform.translation.y = if actor.kind == ActorKind::Moth && !actor.dying {
+                transform.translation.y = if actor.kind == ActorKind::Moth {
                     0.26
                 } else {
                     0.0
                 };
-                *visibility = if actor.hurt
-                    && !actor.dying
-                    && actor.age < 0.30
-                    && (actor.age / 0.055) as usize % 2 == 1
-                {
-                    Visibility::Hidden
-                } else {
-                    Visibility::Inherited
-                };
             }
         }
-        if let Ok(mut shadow) = shadows.get_mut(actor.shadow) {
-            shadow.translation = Vec3::new(root.translation.x, 0.012, root.translation.z);
-            let airborne = (root.translation.y / 0.24).clamp(0.0, 1.0);
-            let size = actor_contact_size(actor.kind);
-            shadow.scale = Vec3::new(
-                size.x * (1.0 - 0.25 * airborne),
-                size.y * (1.0 - 0.25 * airborne),
-                1.0,
-            );
+        if actor.kind == ActorKind::Traveler {
+            if let Ok(mut shadow) = shadows.get_mut(actor.shadow) {
+                shadow.translation = Vec3::new(root.translation.x, 0.012, root.translation.z);
+            }
         }
-    }
-}
-
-fn animate_fruit(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut ground_fruit: Query<
-        (&mut GroundPlum, &mut Transform, &mut Visibility),
-        Without<FruitFlight>,
-    >,
-    mut flying: Query<
-        (Entity, &mut FruitFlight, &mut Transform, &mut Visibility),
-        Without<GroundPlum>,
-    >,
-) {
-    for (mut fruit, mut transform, mut visibility) in &mut ground_fruit {
-        fruit.age += time.delta_secs();
-        let age = fruit.age - fruit.delay;
-        *visibility = if age < 0.0 {
-            Visibility::Hidden
-        } else {
-            Visibility::Inherited
-        };
-        let endpoint = ground(fruit.cell) + Vec3::Y * 0.025;
-        if fruit.falling && age < 0.70 {
-            let t = (age / 0.70).clamp(0.0, 1.0);
-            let start = ground(TREE) + Vec3::Y * 2.45;
-            transform.translation = start.lerp(endpoint, t);
-            transform.translation.y += 0.35 * (std::f32::consts::PI * t).sin();
-        } else {
-            let bounce_age = if fruit.falling { age - 0.70 } else { age };
-            let bounce =
-                if (0.0..0.22).contains(&bounce_age) && (fruit.falling || fruit.delay > 0.0) {
-                    0.14 * (std::f32::consts::PI * bounce_age / 0.22).sin()
-                } else {
-                    0.0
-                };
-            transform.translation = endpoint + Vec3::Y * bounce;
-        }
-    }
-    for (entity, mut flight, mut transform, mut visibility) in &mut flying {
-        flight.age += time.delta_secs();
-        let age = flight.age - flight.delay;
-        if age < 0.0 {
-            *visibility = Visibility::Hidden;
-            continue;
-        }
-        let t = (age / flight.duration).clamp(0.0, 1.0);
-        *visibility = Visibility::Inherited;
-        transform.translation =
-            flight.from.lerp(flight.to, t) + Vec3::Y * (flight.arc * 4.0 * t * (1.0 - t));
-        transform.scale = Vec3::splat(if flight.shrink { 1.0 - 0.85 * t } else { 1.0 });
-        if t >= 1.0 {
-            commands.entity(entity).despawn();
-        }
-    }
-}
-
-fn animate_feedback(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut sparks: Query<(Entity, &mut Feedback, &mut Transform)>,
-) {
-    for (entity, mut spark, mut transform) in &mut sparks {
-        spark.age += time.delta_secs();
-        if spark.age >= spark.duration {
-            commands.entity(entity).despawn();
-            continue;
-        }
-        transform.translation += spark.velocity * time.delta_secs();
-        spark.velocity.y -= time.delta_secs() * 0.7;
-        transform.scale = Vec3::splat((1.0 - spark.age / spark.duration).max(0.0));
     }
 }
 
@@ -1427,78 +809,5 @@ fn light_shadow_layer(
         commands
             .entity(entity)
             .insert(layers.cloned().unwrap_or_default().with(SHADOW_LAYER));
-    }
-}
-
-/// On-demand ECS evidence, after transform/visibility propagation. No state changes.
-fn diagnose_figures(
-    keys: Res<ButtonInput<KeyCode>>,
-    state: Res<Outing>,
-    meshes: Res<Assets<Mesh>>,
-    materials: Res<Assets<FigureMaterial>>,
-    images: Res<Assets<Image>>,
-    actors: Query<(
-        Entity,
-        &Actor,
-        &GlobalTransform,
-        &Visibility,
-        &InheritedVisibility,
-    )>,
-    cards: Query<(
-        &Mesh3d,
-        &MeshMaterial3d<FigureMaterial>,
-        &Transform,
-        &GlobalTransform,
-        &Visibility,
-        &InheritedVisibility,
-        &ViewVisibility,
-        Option<&Aabb>,
-        Option<&RenderLayers>,
-    )>,
-) {
-    if !keys.just_pressed(KeyCode::F10) {
-        return;
-    }
-    info!(
-        "FIGURES_DUMP area={:?} turn={} logical_enemies={}",
-        state.area,
-        state.turn,
-        state.expedition.enemies.len()
-    );
-    for (root, actor, global, visibility, inherited) in &actors {
-        info!(
-            "FIGURE root={root:?} kind={:?} enemy={:?} hp={} foot={:?} visibility={visibility:?} inherited={}",
-            actor.kind,
-            actor.enemy_id,
-            actor.hp,
-            global.translation(),
-            inherited.get()
-        );
-        for (label, entity) in [("card", actor.card), ("caster", actor.caster)] {
-            match cards.get(entity) {
-                Ok((mesh, material, local, global, visible, inherited, view, aabb, layers)) => {
-                    let texture = materials
-                        .get(&material.0)
-                        .and_then(|m| m.base.base_color_texture.as_ref())
-                        .and_then(|t| images.get(t))
-                        .map(|image| (image.width(), image.height()));
-                    info!(
-                        "FIGURE_PART entity={entity:?} role={label} mesh={:?} cpu_mesh={} vertices={:?} aabb={aabb:?} material={:?} material_loaded={} texture={texture:?} local={local:?} world={:?} determinant={} visibility={visible:?} inherited={} view={} layers={layers:?}",
-                        mesh.0.id(),
-                        meshes.contains(&mesh.0),
-                        meshes.get(&mesh.0).map(Mesh::count_vertices),
-                        material.0.id(),
-                        materials.contains(&material.0),
-                        global.translation(),
-                        global.affine().matrix3.determinant(),
-                        inherited.get(),
-                        view.get()
-                    );
-                }
-                Err(error) => {
-                    warn!("FIGURE_PART entity={entity:?} role={label} query_error={error:?}")
-                }
-            }
-        }
     }
 }

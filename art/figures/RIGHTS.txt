@@ -1,4 +1,4 @@
-Wanderstead / 铜壶镇 · 第一股泉水 — original figure and market artwork
+HD-2D scene preview — original figure and market artwork
 
 These character/prop designs were generated specifically for this repository with
 OpenAI's generate_image tool (provider openai-codex, model gpt-image-2-codex,

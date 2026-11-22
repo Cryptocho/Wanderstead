@@ -1,46 +1,41 @@
-# 铜壶镇 · 第一股泉水
+# HD-2D 场景预览
 
-旅店门口落了一颗李子，镇上的泉却一早就断了。北水门底下有一条旧回水廊：西边是修理工的工具箱，东边的铜架上还挂着手轮。去的时候有两条路，回来时得留点力气。
+当前保留一处室外街区与一处室内遗迹，以及人物、环境动画、光影、像素材质、镜头和整件前景遮挡处理。场景名称、角色身份、故事和玩法均待重新设计。
 
-Bevy 实机：[铜壶镇的春晴市集](reference/visual/market-morning-game.webp) · [静站看居民、风和泉水（动图）](reference/visual/market-morning-life.webp) · [地宫交战](reference/visual/spring-cistern-game.webp) · [挑选器物](reference/visual/spring-journal-game.webp) · [镇泉平视](reference/visual/spring-wheel-game.webp)。
+当前实机：[室外街区](reference/visual/scene-town.webp) · [室内遗迹](reference/visual/scene-cistern.webp)。
 
-## 启动
+## 运行
 
-在本机 Wayland 桌面、仓库根目录运行：
+在当前 Wayland 桌面、仓库根目录执行：
 
 ```sh
 cargo run --locked
 ```
 
-需要 Rust 1.89+ 和硬件 Vulkan 驱动。工程锁定 Bevy 0.16.1，只启用 Wayland。普通 `cargo run` 默认使用官方 `bevy/dynamic_linking`，依赖已开启优化；引擎动态库和可执行文件都在 `target/`。游戏素材、字体均在仓库内。
+Bevy 固定为 0.16.1，需要 Rust 1.89+ 和硬件 Vulkan 驱动。普通开发运行启用官方动态链接，产物留在 `target/`。发布构建：
 
-发布构建：`cargo run --locked --release --no-default-features`，关闭开发动态链接。目标为原生 2560×1440、FIFO 垂直同步；默认尝试 100 FPS，持续达不到则切到 50。`-- --fps 50` 可从启动时锁定半刷新档。
+```sh
+cargo run --locked --release --no-default-features
+```
 
-春晴市集发布实测：Ryzen 5 5500、RX 6500 XT、RADV / Mesa 26.1.8、Wayfire，原生 2560×1440 / 100 Hz，Vulkan、FIFO。窗口在前台，HUD 隐藏，像素、泛光、景深、局部空气和居民动作全开。修好泉台、自动切到 50 档并预热后，每个机位各采连续 600 帧（约 12 秒）；采样时没有截图或启用 GPU 诊断。下表是包含限帧等待的帧间隔。
+目标为原生 2560×1440、FIFO 垂直同步；优先 100 FPS，持续达不到则切至 50。`-- --fps 50` 可从启动锁定半刷新档。截图和性能验证在真实 Wayland 窗口内进行。
 
-| 场景 | 平均 FPS | 中位帧时 | P95 | P99 |
-|---|---:|---:|---:|---:|
-| 十字街 `(0,1)`，默认 54° 俯视，三组居民与喷泉同屏 | 50.00 | 20.000 ms | 20.003 ms | 20.004 ms |
-| 泉台西南 `(3,4)`，拉至 0° 平视，距离 4.8 m | 50.00 | 20.000 ms | 20.004 ms | 20.008 ms |
+## 查看场景
 
-## 游玩
+- **走动**：WASD／方向键可组合，小键盘八方向可单按。斜步需要两个肩格都能通过。
+- **鼠标**：悬停显示格子和可达路线，左键点地面行走，右键或 Esc 取消。人物与道具只作为场景陈设。
+- **镜头**：滚轮、`+`／`−` 连续推近或拉远，Home 恢复默认正北俯视。最近为真正平视。
+- **场景**：F6 在室外街区与室内遗迹之间切换。喷泉持续流水，生物只播放待机动作。
+- **显示**：F7 对比像素处理前后；F12 使用 Bevy 保存截图到 `captures/`。
+- **退出**：Ctrl+Q 或关闭窗口。
 
-- **鼠标**：石板的格缝常驻；悬停看脚点、路线和物件。左键点地面走过去，点药师、箱子或水门会走到旁边互动。遇敌或遇到危险预警会停步；相邻时点敌人攻击。右键取消。
-- **八向移动**：WASD 或方向键可组合（例如 W+D 直接东北走一格），小键盘的八个方向键也可单按。直走、斜走都花一拍；斜线两旁的格子必须都能通过。鼠标预览和实际行走遵守同一条规则。E／Enter 互动，空格或小键盘 5 等候。滚轮／+、− 从正北俯视推到平视；Home 复位。V 调查，J／Tab 翻手记。
-- **镇上**：熟李子可以留给早餐、扔给小魔物，也可以找泉边药师换一瓶药。T 选投掷格；回店吃完还能继续今天的冒险。
-- **井下**：看红格和对手的姿势再行动。Q 护卫，挡住敌击并反击相邻敌人；地上的蒸汽喷口要让开。F 用器物技，护卫或等候后可再用；R 喝药回复 4 点生命。圆盾适合守住窄路，钩索可以隔格拉住对手。
-- **回程**：从南侧楼梯上来，散落的铜片才算存下；每存够四枚，生命上限加一（最多加六）。带回手轮后，点东侧泉台把它装好。修好的泉会一直流，再下井或再住一晚都可以。
-- **显示与退出**：探索时默认隐藏常驻界面，按 H 显示或再次隐藏。J 随时打开手记。F7 切换世界像素墨层；F12 将 Bevy 窗口截图保存到 `captures/`；Ctrl+Q 退出。
+运行状态只含当前场景、主角位置和朝向。旧存档保持原样，当前程序不读取或写入它。
 
-手记保存在 `${XDG_DATA_HOME:-$HOME/.local/share}/wanderstead/plum-mornings.json`，兼容早期只有早餐记录的版本。镇上存好的铜片、器物、药囊、餐点与修复进度保留。在井下倒下或退出，没带上台阶的手轮与散币丢失。`cargo run --locked -- --fresh` 可开临时新局，不读写原存档。
+## 保留的制作管线
 
-## 设计与制作
+`assets/maps/*.grid` 定义场景地格与通行。美术源文件保留在 `art/`，生产素材在 `assets/`，建模和纹理脚本在 `tools/`。旧 UI 原画、字体及其许可也保留为素材资料，当前构建没有启用 UI、文字或 2D Sprite 插件。
 
-[设计笔记 §19](game-design-notes.md#first-outing)记录这场短冒险。[春晴市集](game-design-notes.md#昼间聚落的美术基准春晴市集)保留了作者给的画面参照与本作实景。[镇场概念](reference/visual/copper-square-study.webp)和[回水廊概念](reference/visual/spring-cistern-study.webp)是美术概念图。[RPG Maker 地图参考](reference/roguelike-worldbuilding-research.md#rpg-maker-maps)分析《Ara Fell》原版和《Grimm’s Hollow》的地图。
-
-`assets/maps/*.grid` 同时定义地板、阻挡、交互位置和小地图。3D 源文件及原画在 `art/lane/`、`art/cistern/`、`art/market/`；人物、界面和器皿在 `art/figures/`、`art/book/`、`art/inks/`。`tools/` 保留 `blender-4.5` / `bpy` 与图集加工脚本。主游戏不依赖 `temp/` 的参考原型。
-
-昼间聚落的日光、天光、石路反射率、曝光、泛光和景深共用 `assets/inks/market-morning.json`。铜壶镇的 Blender 制作顺序：
+昼间光色、天空补光、曝光、泛光和景深共用 `assets/inks/market-morning.json`。室外场景制作：
 
 ```sh
 blender-4.5 -b --python-exit-code 1 --python tools/make_lane.py -- --export-only
@@ -49,10 +44,19 @@ blender-4.5 -b --python-exit-code 1 --python tools/bake_sky_shelter.py -- --town
 python3 tools/make_spring_probes.py
 ```
 
-城镇、地宫的导出器把各物件的编号写进每个三角面的第二组 UV，同时导出实体轮廓；随后布景脚本把附属花架、货物和垂旗归给同一物件。独立更新地宫时先运行 `tools/make_cistern.py`，再烘焙布景。天光脚本生成接触阴影、四层天光和石路反光，探针脚本生成漫反射与镜面环境。`tools/make_figures.py` 导出旅人走姿，`tools/make_trade_figures.py` 加工居民动作。
+更新地宫时先运行 `tools/make_cistern.py -- --export-only`，再运行布景脚本。导出器把完整物件编号写入第二组 UV；附属装饰、灯芯、水面和人物使用同一遮挡编号。镜头至主角之间的所有前景物体同时整件隐藏，鼠标可选到露出的道路，碰撞与投影保持原样。
 
-**推近镜头时**，从镜头一直到旅人，所穿过的每件前景物体都会完整隐去。隐藏一栋房屋时，它的屋顶、窗、檐口和挂灯一起消失；隔着屋和摊位时两者同时让开。仍能看见旁边的建筑，也能点之前被屋面盖住的地面。拉远、走开或换层后重新判定，保持正常的碰撞和任务状态。[同一机位实测：左关、右开](reference/visual/spring-sight-cut.webp)。
+`tools/make_figures.py` 加工旅人走姿，`tools/make_trade_figures.py` 加工镇民生活动作。原始素材与许可证随项目保留。
 
-开发：`--qa /绝对路径/qa.sock` 开启本地 Unix datagram 接口。`state`、`expedition`、`project X Z [高度]`、`pick X Y` 查询实况；`pointer X Y`、`mouse down|up`、`key kp9 down|up`、`scroll 3` 走实际输入链。`sight` 返回当前隐藏的模型和角色，`sight off` / `sight on` 在同一机位作遮挡对照。`capture NAME` 读回窗口，`measure` / `stats` 采集连续 600 帧，`exit` 退出。正常启动不监听 socket。可选 `WANDERSTEAD_GPU_PROFILE=1` 开启 Bevy 渲染阶段诊断；`passes` 返回 GPU 毫秒均值。
+## 本地检查接口
 
-美术对照：`optics` 读取状态，`optics bloom off`、`optics dof off`、`optics air off` 分别关闭泛光、景深或广场局部空气与飘瓣，将 `off` 换成 `on` 恢复。镜头、光源和游戏回合保持原位。
+`--qa /绝对路径/qa.sock` 按需启用 Unix datagram 接口，正常运行不监听 socket。
+
+- `state`：场景、位置、朝向、移动序号、选格、路线、镜头、窗口与帧率档位。
+- `project X Z [高度]`、`pick X Y`：坐标投影与实际可见表面拾取。
+- `pointer X Y`、`mouse down|up`、`key kp9 down|up`、`key f6 down|up`、`scroll 3`：走实际输入处理链。
+- `sight [on|off]`：读取隐藏模型，或在同一机位比较遮挡效果。
+- `optics [air|bloom|dof on|off]`：读取或切换光学层。
+- `capture NAME`：引擎内截图；`measure` / `stats`：采集连续 600 帧；`exit`：退出。
+
+设计笔记与 `reference/` 调查资料保留。§19 记录场景和渲染制作约定，后续名称、故事与玩法由项目作者确定。

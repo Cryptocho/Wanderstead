@@ -1,12 +1,11 @@
-//! Area-local light sources, falling water and the repaired fountain. No simulation lives here.
+//! Scene-local light sources, flowing water and ambient air.
 mod market_air;
 use crate::{
     Frame,
     daylight::{Optics, SQUARE, srgb},
-    delve::Quest,
-    game::Outing,
     lens::{LensSet, LensState},
     map::{self, Area},
+    scene::SceneState,
     sight::{SightPart, part},
     stage::Regions,
 };
@@ -38,10 +37,7 @@ impl Plugin for SpringPlugin {
         .insert_resource(DirectionalLightShadowMap { size: 2048 })
         .insert_resource(PointLightShadowMap { size: 512 })
         .add_systems(Startup, build)
-        .add_systems(
-            Update,
-            (show_spring, breathe, release_steam).in_set(Frame::Draw),
-        )
+        .add_systems(Update, (breathe, release_steam).in_set(Frame::Draw))
         .add_systems(
             PostUpdate,
             carry_lantern
@@ -90,7 +86,7 @@ impl Material for AirInk {
 #[derive(Component)]
 struct Sun;
 #[derive(Component)]
-pub(crate) struct Refilled;
+pub(crate) struct FountainWater;
 #[derive(Component)]
 struct Flicker {
     phase: f32,
@@ -305,9 +301,9 @@ fn build(
     let flowing = c
         .spawn((
             Name::new("Fountain in service"),
-            Refilled,
+            FountainWater,
             Transform::default(),
-            Visibility::Hidden,
+            Visibility::Inherited,
             ChildOf(roots.town),
         ))
         .id();
@@ -495,7 +491,7 @@ fn build(
         }
     }
     for (p, owner) in [
-        (Vec3::new(-7.69, 5.75, -0.12), "CopperKettle"),
+        (Vec3::new(-7.69, 5.75, -0.12), "WestBuilding"),
         (Vec3::new(-7.45, 6.00, -5.02), "Weavers"),
     ] {
         c.spawn((
@@ -531,16 +527,9 @@ fn build(
         ));
     }
 }
-fn show_spring(g: Res<Outing>, mut fountain: Single<&mut Visibility, With<Refilled>>) {
-    fountain.set_if_neq(if g.expedition.quest == Quest::Restored {
-        Visibility::Inherited
-    } else {
-        Visibility::Hidden
-    });
-}
 fn breathe(
     t: Res<Time>,
-    g: Res<Outing>,
+    g: Res<SceneState>,
     mut lights: Query<(&Flicker, &mut PointLight)>,
     mut last: Local<u32>,
 ) {
@@ -563,7 +552,7 @@ fn carry_lantern(
     camera: Single<&Transform, (With<Camera3d>, Without<BeltLantern>)>,
     actor: Single<&Transform, (With<crate::figures::PlayerVisual>, Without<BeltLantern>)>,
     mut pieces: Query<(&BeltLantern, &mut Transform)>,
-    g: Res<Outing>,
+    g: Res<SceneState>,
 ) {
     if g.area != Area::Cistern {
         return;
@@ -582,21 +571,15 @@ fn carry_lantern(
 }
 fn release_steam(
     t: Res<Time>,
-    g: Res<Outing>,
-    mut last: Local<u32>,
-    mut started: Local<Option<f32>>,
+    g: Res<SceneState>,
     mut vents: Query<(&mut Visibility, &mut Transform), With<Vent>>,
 ) {
-    if g.area != Area::Cistern || g.expedition.beat == 0 {
-        *last = 0;
-        *started = None;
-    } else if *last != g.expedition.beat {
-        *last = g.expedition.beat;
-        if *last % 4 == 0 {
-            *started = Some(t.elapsed_secs());
-        }
-    }
-    let since = started.map(|v| t.elapsed_secs() - v).unwrap_or(99.);
+    // Atmospheric vent pulses are presentation time, independent of navigation.
+    let since = if g.area == Area::Cistern {
+        t.elapsed_secs() % 6.0
+    } else {
+        6.0
+    };
     for (mut vis, mut tr) in &mut vents {
         if since < 0.63 {
             vis.set_if_neq(Visibility::Inherited);
@@ -623,7 +606,7 @@ fn face_air(
 }
 #[allow(clippy::type_complexity)]
 fn meter(
-    g: Res<Outing>,
+    g: Res<SceneState>,
     lens: Res<LensState>,
     optics: Res<Optics>,
     mut air: Single<&mut Visibility, With<MarketAir>>,

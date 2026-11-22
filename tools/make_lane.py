@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Copper Kettle: authored 3D market streets, Blender 4.5, north is game -Z.
+"""Unnamed outdoor scene: authored 3D market streets, Blender 4.5, north is game -Z.
 Run blender-4.5 --background --python-exit-code 1 --python tools/make_lane.py -- --export-only.
 Original authored pixel surfaces + original meshes; no third-party art.
 The grid is geometry's authority. All walkable surfaces have top height zero.
@@ -482,7 +482,7 @@ def house(tag,x,z,w,d,h=3.2):
  for mesh in [pl,roof,glass,base]:mesh.finish()
 
 # Main inn remains exactly inside its original blocked footprint.
-house('CopperKettle',-7.05,.10,2.8,3.1,3.08)
+house('WestBuilding',-7.05,.10,2.8,3.1,3.08)
 house('Weavers',-6.6,-4.8,3.7,3.45,3.25)
 house('Apothecary',-10.3,-.2,3.5,3.8,3.45)
 house('Baker',-10.1,-5.0,3.3,4.1,3.1)
@@ -518,9 +518,9 @@ def shelf(x,y,z,w,mat='InnCabinet'):
   lathe(pots,(xx,y-.08,z+.21),[(0,.044),(.03,.07),(.12,.064),(.16,.03),(.175,.034)],n=10)
   lathe(copper,(xx,y+.23,z+.20),[(0,.042),(.02,.05),(.10,.046),(.13,.032)],n=10)
 
-# Copper Kettle: a covered second-floor wood gallery, dormers, cut lattice panes,
-# sunken pantry and a real projecting sign, all behind the interaction row.
-active_owner=site.names['CopperKettle']
+# Western building: a covered wood gallery, dormers, lattice panes,
+# recessed shelves and a projecting sign.
+active_owner=site.names['WestBuilding']
 gallery=Mesh('Inn_UpperGallery','Wood')
 gallery.box((-7.05,1.31,1.93),(2.76,.12,.58))
 for xx in [-8.32,-7.47,-6.62,-5.77]:
@@ -549,7 +549,7 @@ for xx in [-7.834,-6.266]:
 shelf(-6.12,.84,1.76,.72)
 panel('Inn_FloralPlasterRelief','InnPlanterRelief',-8.16,.87,1.755,.49,.74)
 wood.box((-5.47,2.51,1.93),(.86,.72,.10))
-panel('CopperKettle_EngravedSign','InnSign',-5.47,2.51,1.986,.82,.68)
+panel('WestBuilding_EngravedSign','InnSign',-5.47,2.51,1.986,.82,.68)
 wood.beam((-5.75,2.97,1.91),(-5.15,2.97,1.91),.04,n=6)
 for xx in [-5.72,-5.23]:iron.beam((xx,2.96,1.95),(xx,2.84,1.95),.014)
 
@@ -611,7 +611,7 @@ lathe(pots,(-5.08,.775,3.25),[(0,.10),(.045,.13),(.11,.14),(.115,.12),(.06,.10)]
 active_owner=site.names['table']
 lathe(copper,(-4.02,.785,2.78),[(0,.10),(.05,.14),(.20,.13),(.25,.08),(.28,.08),(.25,.065)])
 # Original inn sign is below eave and recessed west of the breakfast sightline.
-active_owner=site.names['CopperKettle']
+active_owner=site.names['WestBuilding']
 wood.box((-5.02,2.65,2.12),(.95,.075,.08))
 wood.beam((-5.48,2.2,2.12),(-4.56,2.63,2.12),.035,n=6)
 for x in [-4.94,-4.62]:iron.beam((x,2.61,2.12),(x,2.31,2.12),.012)

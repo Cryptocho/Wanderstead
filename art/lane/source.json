@@ -301,7 +301,7 @@
     "channel": "TEXCOORD_1.x, constant positive semantic object ID per face; zero ground/debris",
     "bounds": "Finite physical primitive AABBs, multipart walls, roofs, supports and arch sectors; material batching retains face IDs",
     "owners": {
-      "CopperKettle": 1,
+      "WestBuilding": 1,
       "Weavers": 2,
       "Apothecary": 3,
       "Baker": 4,

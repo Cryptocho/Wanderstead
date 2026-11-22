@@ -15,8 +15,8 @@ use bevy::{
 use crate::{
     daylight::{Optics, SQUARE},
     figures::PlayerVisual,
-    game::{Outing, ground},
     map::Area,
+    scene::{SceneState, ground},
 };
 
 pub struct LensPlugin;
@@ -141,7 +141,7 @@ fn focus(
 
 fn install_camera(
     mut commands: Commands,
-    outing: Res<Outing>,
+    outing: Res<SceneState>,
     mut state: ResMut<LensState>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) {
@@ -157,7 +157,6 @@ fn install_camera(
             hdr: true,
             ..default()
         },
-        IsDefaultUiCamera,
         Projection::Perspective(PerspectiveProjection {
             fov: (aspect_span(span, &window) / (2.0 * distance)).atan() * 2.0,
             near: 0.06,
@@ -193,7 +192,7 @@ fn move_camera(
     keys: Res<ButtonInput<KeyCode>>,
     scroll: Res<AccumulatedMouseScroll>,
     time: Res<Time>,
-    outing: Res<Outing>,
+    outing: Res<SceneState>,
     optics: Res<Optics>,
     mut state: ResMut<LensState>,
     window: Single<&Window, With<PrimaryWindow>>,

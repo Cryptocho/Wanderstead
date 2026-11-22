@@ -1,4 +1,4 @@
-//! Shared lit scenery, distortion-free pixel materials and diegetic interactions.
+//! Shared lit scenery and pixel materials, independent of game rules.
 use std::collections::HashMap;
 
 use bevy::{
@@ -11,8 +11,7 @@ use bevy::{
 };
 
 use crate::sight::{MovingSolid, SightMask, part};
-use crate::{Frame, game::*};
-use crate::{delve::Quest, map::Area};
+use crate::{Frame, map::Area, scene::SceneState};
 
 pub struct StagePlugin;
 
@@ -20,7 +19,6 @@ impl Plugin for StagePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PaletteState>()
             .init_resource::<SurfaceCache>()
-            .init_resource::<StageAnimation>()
             .add_systems(PreStartup, create_regions)
             .add_plugins(MaterialPlugin::<WorldMaterial>::default())
             .add_systems(Startup, setup_stage)
@@ -33,8 +31,6 @@ impl Plugin for StagePlugin {
                     bind_stage_surfaces,
                     bind_tree_nodes,
                     animate_trees,
-                    breakfast_feedback,
-                    expedition_props,
                     sync_palette,
                 )
                     .chain()
@@ -128,23 +124,8 @@ struct TreeSway {
 
 #[derive(Clone, Copy)]
 enum SwayKind {
-    Crown { shake: bool },
-    Trunk,
+    Crown,
     Awning,
-}
-#[derive(Component)]
-struct RipeFruit;
-
-#[derive(Component)]
-struct Curd;
-#[derive(Component)]
-struct Juice;
-#[derive(Component)]
-struct Spoon;
-#[derive(Component)]
-struct Portion {
-    index: u8,
-    age: f32,
 }
 
 /// Lights, meshes and effects for both floors share local tile coordinates.
@@ -160,10 +141,6 @@ impl Regions {
             Area::Cistern => self.cistern,
         }
     }
-}
-#[derive(Resource)]
-struct StageProps {
-    plum: Handle<Scene>,
 }
 
 #[derive(Resource)]
@@ -240,13 +217,6 @@ fn site_edges(images: &mut Assets<Image>) -> SiteEdges {
     )))
 }
 
-#[derive(Component)]
-enum OldWorks {
-    Wheel,
-    ToolLid(Quat),
-    TonicLid(Quat),
-}
-
 fn create_regions(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
@@ -267,14 +237,14 @@ fn create_regions(
     commands.insert_resource(site_edges(&mut images));
     let town = commands
         .spawn((
-            Name::new("Copper Kettle Square"),
+            Name::new("Outdoor scene"),
             Transform::default(),
             Visibility::Inherited,
         ))
         .id();
     let cistern = commands
         .spawn((
-            Name::new("Spring cistern B1"),
+            Name::new("Indoor scene"),
             Transform::default(),
             Visibility::Hidden,
         ))
@@ -283,7 +253,7 @@ fn create_regions(
 }
 
 fn switch_region(
-    g: Res<Outing>,
+    g: Res<SceneState>,
     roots: Res<Regions>,
     mut visible: Query<&mut Visibility>,
     mut old: Local<Option<Area>>,
@@ -303,61 +273,6 @@ fn switch_region(
     }
 }
 
-fn expedition_props(
-    g: Res<Outing>,
-    mut props: Query<(&OldWorks, &mut Transform, &mut Visibility)>,
-) {
-    for (part, mut t, mut vis) in &mut props {
-        match part {
-            OldWorks::Wheel => {
-                let show = if g.expedition.quest == Quest::Seeking {
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                };
-                vis.set_if_neq(show);
-            }
-            OldWorks::ToolLid(rest) | OldWorks::TonicLid(rest) => {
-                let open = match part {
-                    OldWorks::ToolLid(_) => g.expedition.seal_open,
-                    _ => g.expedition.tonic_open,
-                };
-                let q = if open {
-                    *rest * Quat::from_rotation_x(-1.65)
-                } else {
-                    *rest
-                };
-                if t.rotation != q {
-                    t.rotation = q;
-                }
-            }
-        }
-    }
-}
-
-#[derive(Resource)]
-struct StageAnimation {
-    day: u32,
-    turn: u32,
-    shake_age: f32,
-    meal_age: f32,
-    portion_count: u8,
-    meal_started: bool,
-}
-
-impl Default for StageAnimation {
-    fn default() -> Self {
-        Self {
-            day: u32::MAX,
-            turn: u32::MAX,
-            shake_age: 100.0,
-            meal_age: 100.0,
-            portion_count: 0,
-            meal_started: false,
-        }
-    }
-}
-
 const BOWL_POSITION: Vec3 = Vec3::new(-3.80, 0.79, 3.08);
 
 #[derive(Resource)]
@@ -372,7 +287,7 @@ fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regi
         StageRoot::District,
     ));
     commands.spawn((
-        Name::new("Old springworks"),
+        Name::new("Indoor masonry and channels"),
         ChildOf(roots.cistern),
         SceneRoot(assets.load("cistern/cistern.glb#Scene0")),
         StageRoot::District,
@@ -388,7 +303,7 @@ fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regi
         ));
     }
     commands.spawn((
-        Name::new("Breakfast bowl on the table"),
+        Name::new("Bowl on the table"),
         ChildOf(roots.town),
         SceneRoot(assets.load("inks/bowl.glb#Scene0")),
         Transform::from_translation(BOWL_POSITION),
@@ -399,15 +314,6 @@ fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regi
         ChildOf(roots.town),
         Transform::from_translation(BOWL_POSITION + Vec3::Y * 0.153),
         StageRoot::Table,
-        Curd,
-    ));
-    commands.spawn((
-        SceneRoot(assets.load("inks/juice.glb#Scene0")),
-        ChildOf(roots.town),
-        Transform::from_translation(BOWL_POSITION + Vec3::Y * 0.16),
-        Visibility::Hidden,
-        StageRoot::Table,
-        Juice,
     ));
     commands.spawn((
         ChildOf(roots.town),
@@ -415,11 +321,7 @@ fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regi
         Transform::from_translation(BOWL_POSITION + Vec3::new(0.14, 0.153, 0.11))
             .with_rotation(Quat::from_rotation_y(-0.35) * Quat::from_rotation_z(0.22)),
         StageRoot::Table,
-        Spoon,
     ));
-    commands.insert_resource(StageProps {
-        plum: assets.load("inks/plum-cut.glb#Scene0"),
-    });
 }
 
 fn bind_sky(
@@ -482,7 +384,7 @@ fn bind_stage_surfaces(
     contact: Res<GroundContact>,
     sight: Res<SightMask>,
     names: Query<&Name>,
-    flowing: Single<Entity, With<crate::spring::Refilled>>,
+    flowing: Single<Entity, With<crate::spring::FountainWater>>,
 ) {
     for (entity, source, mesh, name) in &surfaces {
         let Some(stage) = stage_of(entity, &roots, &parents) else {
@@ -520,7 +422,7 @@ fn bind_stage_surfaces(
                                 Some("Wet paving" | "Ivory mosaic") => 2.,
                                 _ => 0.,
                             },
-                            0.,
+                            1.,
                             match name.map(|m| m.0.as_str()) {
                                 Some("Lane_CrownFresh" | "Lane_Leaves") => 1.,
                                 Some("Lane_CrownBlossom" | "Lane_Petals") => 2.,
@@ -540,8 +442,7 @@ fn bind_stage_surfaces(
         if matches!(stage, StageRoot::Table) {
             commands.entity(entity).insert(part(Area::Town, "table"));
         }
-        // The workshop's actual wheel fits the bronze socket: reuse its mesh
-        // and material, so taking it and reinstalling it cannot change its design.
+        // Reuse the same bronze wheel on both display pieces.
         let mut ancestor = entity;
         while let Ok(parent) = parents.get(ancestor) {
             ancestor = parent.parent();
@@ -560,7 +461,7 @@ fn bind_stage_surfaces(
             if owner == "relic" {
                 let fountain = part(Area::Town, "fountain");
                 commands.spawn((
-                    Name::new("Returned bronze handwheel"),
+                    Name::new("Fountain handwheel"),
                     Mesh3d(mesh.0.clone()),
                     fountain,
                     MovingSolid(fountain.0),
@@ -587,31 +488,27 @@ fn toggle_palette(keys: Res<ButtonInput<KeyCode>>, mut palette: ResMut<PaletteSt
 
 fn sync_palette(
     palette: Res<PaletteState>,
-    outing: Res<Outing>,
+    outing: Res<SceneState>,
     cache: Res<SurfaceCache>,
     mut materials: ResMut<Assets<WorldMaterial>>,
     shelter: Res<SkyShelter>,
-    mut last: Local<Option<(Area, bool)>>,
+    mut last: Local<Option<Area>>,
 ) {
-    let wet = outing.expedition.quest == Quest::Restored;
-    let mark = (outing.area, wet);
-    if *last == Some(mark) && !palette.is_changed() && !cache.is_changed() {
+    if *last == Some(outing.area) && !palette.is_changed() && !cache.is_changed() {
         return;
     }
-    *last = Some(mark);
+    *last = Some(outing.area);
     let settings = palette.uniform();
     let field = shelter.at(outing.area);
     for handle in cache.0.values() {
-        if materials.get(handle).is_some_and(|m| {
-            m.extension.settings == settings
-                && m.extension.shelter == *field
-                && m.extension.floor_style.y == wet as u8 as f32
-        }) {
+        if materials
+            .get(handle)
+            .is_some_and(|m| m.extension.settings == settings && m.extension.shelter == *field)
+        {
             continue;
         }
         if let Some(material) = materials.get_mut(handle) {
             material.extension.settings = settings;
-            material.extension.floor_style.y = wet as u8 as f32;
             material.extension.shelter = field.clone();
         }
     }
@@ -629,31 +526,11 @@ fn bind_tree_nodes(
         }
         commands.entity(entity).insert(TreeNodeBound);
         match name.as_str() {
-            "wheel_pickup" => {
-                commands.entity(entity).insert(OldWorks::Wheel);
-            }
-            "tool_lid" => {
-                commands
-                    .entity(entity)
-                    .insert(OldWorks::ToolLid(transform.rotation));
-            }
-            "tonic_lid" => {
-                commands
-                    .entity(entity)
-                    .insert(OldWorks::TonicLid(transform.rotation));
-            }
-            name if name.starts_with("canopy_")
-                || name.starts_with("awning_")
-                || name == "trunk_main" =>
-            {
+            name if name.starts_with("canopy_") || name.starts_with("awning_") => {
                 let kind = if name.starts_with("awning_") {
                     SwayKind::Awning
-                } else if name == "trunk_main" {
-                    SwayKind::Trunk
                 } else {
-                    SwayKind::Crown {
-                        shake: name == "canopy_main",
-                    }
+                    SwayKind::Crown
                 };
                 commands.entity(entity).insert(TreeSway {
                     rest: *transform,
@@ -661,155 +538,20 @@ fn bind_tree_nodes(
                     phase: transform.translation.x * 0.71 + transform.translation.z * 1.13,
                 });
             }
-            name if name.starts_with("ripe_plum_main_") => {
-                commands.entity(entity).insert(RipeFruit);
-            }
             _ => {}
         }
     }
 }
 
-fn animate_trees(
-    outing: Res<Outing>,
-    time: Res<Time>,
-    mut animation: ResMut<StageAnimation>,
-    mut trees: Query<(&TreeSway, &mut Transform)>,
-    mut fruit: Query<&mut Visibility, With<RipeFruit>>,
-) {
-    if animation.day != outing.day {
-        animation.day = outing.day;
-        animation.turn = u32::MAX;
-        animation.shake_age = 100.0;
-        animation.meal_age = 100.0;
-        animation.meal_started = false;
-    }
-    if animation.turn != outing.turn {
-        animation.turn = outing.turn;
-        if outing.action == ActionKind::Shake {
-            animation.shake_age = 0.0;
-        }
-    }
-    animation.shake_age = (animation.shake_age + time.delta_secs()).min(100.0);
-    let t = animation.shake_age;
-    let shake = if t < 1.7 {
-        (t * 27.0).sin() * (-t * 3.4).exp()
-    } else {
-        0.0
-    };
+fn animate_trees(time: Res<Time>, mut trees: Query<(&TreeSway, &mut Transform)>) {
     let now = time.elapsed_secs();
     for (tree, mut transform) in &mut trees {
         let wave = (now * 1.63 + tree.phase).sin() + 0.36 * (now * 2.71 + tree.phase * 1.7).sin();
         let (x, z) = match tree.kind {
-            SwayKind::Crown { shake: responds } => (
-                wave * 0.008,
-                wave * 0.022 + if responds { shake * 0.065 } else { 0. },
-            ),
-            SwayKind::Trunk => (0., shake * 0.014),
+            SwayKind::Crown => (wave * 0.008, wave * 0.022),
             SwayKind::Awning => (wave * 0.027, 0.),
         };
         transform.rotation =
             tree.rest.rotation * Quat::from_rotation_x(x) * Quat::from_rotation_z(z);
-    }
-    for mut visible in &mut fruit {
-        *visible = if outing.tree_shaken {
-            Visibility::Hidden
-        } else {
-            Visibility::Inherited
-        };
-    }
-}
-
-fn portion_position(index: u8, count: u8) -> Vec3 {
-    let angle = index as f32 * 2.399_963;
-    let radius = 0.208 * ((index as f32 + 0.5) / count.max(1) as f32).sqrt();
-    BOWL_POSITION + Vec3::new(radius * angle.cos(), 0.158, radius * angle.sin())
-}
-
-fn breakfast_feedback(
-    mut commands: Commands,
-    outing: Res<Outing>,
-    interface: Res<Interface>,
-    props: Res<StageProps>,
-    roots: Res<Regions>,
-    time: Res<Time>,
-    mut animation: ResMut<StageAnimation>,
-    mut portions: Query<
-        (Entity, &mut Portion, &mut Transform),
-        (Without<Curd>, Without<Juice>, Without<Spoon>),
-    >,
-    mut curd: Query<&mut Transform, (With<Curd>, Without<Juice>, Without<Spoon>)>,
-    mut juice: Query<
-        (&mut Transform, &mut Visibility),
-        (With<Juice>, Without<Curd>, Without<Spoon>),
-    >,
-    mut spoon: Query<&mut Transform, (With<Spoon>, Without<Curd>, Without<Juice>)>,
-) {
-    let count = if interface.page == Page::Bowl {
-        interface.filling
-    } else {
-        outing.breakfast.unwrap_or(0)
-    };
-    if outing.breakfast.is_some() && !animation.meal_started {
-        animation.meal_started = true;
-        animation.meal_age = 0.0;
-    }
-    animation.meal_age = (animation.meal_age + time.delta_secs()).min(100.0);
-    if count > animation.portion_count {
-        for index in animation.portion_count..count {
-            commands.spawn((
-                Name::new(format!("Fresh cut plum {}", index + 1)),
-                ChildOf(roots.town),
-                SceneRoot(props.plum.clone()),
-                Transform::from_translation(portion_position(index, count) + Vec3::Y * 0.30),
-                Portion { index, age: 0.0 },
-                StageRoot::Table,
-            ));
-        }
-    }
-    animation.portion_count = count;
-    let eaten = if outing.breakfast.is_some() {
-        ((animation.meal_age - 0.75) / 0.85).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let crowded_scale = (8.0 / count.max(8) as f32).sqrt();
-    for (entity, mut portion, mut transform) in &mut portions {
-        if portion.index >= count {
-            commands.entity(entity).despawn();
-            continue;
-        }
-        portion.age += time.delta_secs();
-        let falling = (1.0 - portion.age / 0.42).clamp(0.0, 1.0);
-        transform.translation = portion_position(portion.index, count)
-            + Vec3::Y * (0.30 * falling * falling - 0.052 * eaten);
-        transform.rotation = Quat::from_rotation_y(portion.index as f32 * 2.399_963);
-        transform.scale = Vec3::splat(crowded_scale * (1.0 - 0.65 * eaten));
-    }
-    for mut transform in &mut curd {
-        transform.translation.y = BOWL_POSITION.y + 0.153 - 0.052 * eaten;
-        transform.scale = Vec3::new(1.0 - 0.22 * eaten, 1.0, 1.0 - 0.22 * eaten);
-    }
-    for (mut transform, mut visibility) in &mut juice {
-        *visibility = if count > 0 {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        transform.translation.y = BOWL_POSITION.y + 0.160 - 0.052 * eaten;
-        let spread = (0.30 + count as f32 * 0.13).min(1.10) * (1.0 - 0.22 * eaten);
-        transform.scale = Vec3::new(spread, 1.0, spread);
-    }
-    let scoop = if outing.breakfast.is_some() && animation.meal_age < 1.6 {
-        ((animation.meal_age - 0.30) / 1.2 * std::f32::consts::PI)
-            .clamp(0.0, std::f32::consts::PI)
-            .sin()
-    } else {
-        0.0
-    };
-    for mut transform in &mut spoon {
-        transform.translation =
-            BOWL_POSITION + Vec3::new(0.14 + 0.045 * scoop, 0.153 + 0.115 * scoop, 0.11);
-        transform.rotation =
-            Quat::from_rotation_y(-0.35) * Quat::from_rotation_z(0.22 - 0.35 * scoop);
     }
 }

@@ -1,13 +1,11 @@
-mod book;
 mod controls;
 mod daylight;
-mod delve;
 mod figures;
-mod game;
 mod lens;
 mod map;
 mod pixel_press;
 mod runtime;
+mod scene;
 mod sight;
 mod spring;
 mod stage;
@@ -41,25 +39,20 @@ fn main() -> ExitCode {
         eprintln!("请在 Wayland 桌面内运行。此版本没有启用 X11 后端。");
         return ExitCode::FAILURE;
     }
-    let journal = game::JournalFile::open(opts.ephemeral);
-    let outing = journal.resume();
     let mut app = App::new();
     if let Err(e) = runtime::configure(&mut app, opts) {
         eprintln!("{e}");
         return ExitCode::FAILURE;
     }
-    app.insert_resource(outing)
-        .insert_resource(journal)
+    app.init_resource::<scene::SceneState>()
         .init_resource::<daylight::Optics>()
-        .init_resource::<game::Interface>()
-        .add_event::<game::Intent>()
         .insert_resource(WinitSettings::game())
         .add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        title: "铜壶镇 · 第一股泉水 | Wanderstead".into(),
-                        name: Some("Wanderstead".into()),
+                        title: "HD-2D · 场景预览".into(),
+                        name: Some("hd2d-preview".into()),
                         mode: WindowMode::BorderlessFullscreen(MonitorSelection::Current),
                         resolution: WindowResolution::new(2560., 1440.)
                             .with_scale_factor_override(1.),
@@ -81,7 +74,6 @@ fn main() -> ExitCode {
             stage::StagePlugin,
             spring::SpringPlugin,
             figures::FiguresPlugin,
-            book::BookPlugin,
             runtime::RuntimePlugin,
         ));
     if std::env::var_os("WANDERSTEAD_GPU_PROFILE").is_some() {
