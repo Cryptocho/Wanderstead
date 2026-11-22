@@ -2,7 +2,7 @@
 
 ## 1. 工作目标与资料
 
-这是一个使用 **Rust + Bevy** 开发的单机传统 Roguelike RPG。当前工作从设计进入可运行体验的制作。
+这是一个使用 **Rust + Bevy** 开发的单机传统 Roguelike RPG。当前阶段是为日式西幻的第一段可玩体验选题。
 
 - 开始任务前，阅读 `game-design-notes.md` 中与任务有关的章节。
 - `reference/` 保存研究与参考资料。借鉴其机制、叙事和美术方法，创作本作自己的内容。
@@ -36,7 +36,7 @@
 - 后端选择方法必须符合目标工程所用的 winit / Bevy 版本。运行失败时报告具体原因；性能验证不得改用 XWayland、离屏模式或软件渲染替代。
 - 纯逻辑测试可以无窗口运行。它们不替代桌面画面与性能验证。
 
-主游戏位于仓库根目录。玩家用 `./play` 启动已验证版本；开发时用 `env -u DISPLAY cargo run --locked --release --bin lampspan` 运行当前源码。实机验证通过后用 `tools/package_linux.sh` 发布二进制及与之配套的素材。下面的命令仅用于早期 `temp/` 视觉原型：
+主工程已回到设计基线，根目录暂时没有可运行的小样。要查看独立的早期 `temp/` 视觉原型，可运行：
 
 ```sh
 (cd temp && env -u DISPLAY cargo run --release)
