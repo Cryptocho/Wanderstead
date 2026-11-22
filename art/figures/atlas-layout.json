@@ -1,0 +1,101 @@
+{
+  "palette_colors": 64,
+  "sampler": "nearest",
+  "alpha": "binary",
+  "padding_below_feet": 2,
+  "traveler-walk": {
+    "tile": [
+      96,
+      128
+    ],
+    "grid": [
+      4,
+      4
+    ],
+    "rows": [
+      "south",
+      "west",
+      "north",
+      "east"
+    ],
+    "foot": [
+      48,
+      126
+    ],
+    "body_pixels": 108
+  },
+  "traveler-actions": {
+    "tile": [
+      96,
+      128
+    ],
+    "grid": [
+      4,
+      4
+    ],
+    "rows": [
+      "gather",
+      "shake",
+      "throw",
+      "eat"
+    ],
+    "foot": [
+      48,
+      126
+    ],
+    "body_pixels": 108
+  },
+  "keeper-work": {
+    "tile": [
+      96,
+      128
+    ],
+    "grid": [
+      4,
+      2
+    ],
+    "rows": [
+      "stir",
+      "knead"
+    ],
+    "foot": [
+      48,
+      126
+    ],
+    "body_pixels": 108
+  },
+  "jelly": {
+    "tile": [
+      96,
+      96
+    ],
+    "grid": [
+      4,
+      2
+    ],
+    "rows": [
+      "hop",
+      "swallow"
+    ],
+    "foot": [
+      48,
+      94
+    ],
+    "body_pixels": 78
+  },
+  "plum": {
+    "tile": [
+      32,
+      32
+    ],
+    "grid": [
+      1,
+      1
+    ],
+    "foot": [
+      16,
+      30
+    ],
+    "body_pixels": 25
+  }
+}

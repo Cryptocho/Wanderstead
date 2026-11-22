@@ -1,0 +1,79 @@
+mod book;
+mod controls;
+mod figures;
+mod game;
+mod lens;
+mod runtime;
+mod stage;
+
+use bevy::{
+    prelude::*,
+    window::{MonitorSelection, PresentMode, WindowMode, WindowResolution},
+    winit::WinitSettings,
+};
+use std::{num::NonZeroU32, process::ExitCode};
+
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Frame {
+    Input,
+    Act,
+    Draw,
+}
+
+fn main() -> ExitCode {
+    let opts = match runtime::Options::read() {
+        Ok(Some(o)) => o,
+        Ok(None) => return ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("WAYLAND_SOCKET").is_none()
+    {
+        eprintln!("请在 Wayland 桌面内运行。此版本没有启用 X11 后端。");
+        return ExitCode::FAILURE;
+    }
+    let journal = game::JournalFile::open(opts.ephemeral);
+    let outing = journal.resume();
+    let mut app = App::new();
+    if let Err(e) = runtime::configure(&mut app, opts) {
+        eprintln!("{e}");
+        return ExitCode::FAILURE;
+    }
+    app.insert_resource(outing)
+        .insert_resource(journal)
+        .init_resource::<game::Interface>()
+        .add_event::<game::Intent>()
+        .insert_resource(WinitSettings::game())
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "旅店外的李子 · Wanderstead".into(),
+                        name: Some("Wanderstead".into()),
+                        mode: WindowMode::BorderlessFullscreen(MonitorSelection::Current),
+                        resolution: WindowResolution::new(2560., 1440.)
+                            .with_scale_factor_override(1.),
+                        present_mode: PresentMode::Fifo,
+                        desired_maximum_frame_latency: NonZeroU32::new(2),
+                        ..default()
+                    }),
+                    ..default()
+                })
+                .set(ImagePlugin::default_nearest()),
+        )
+        .configure_sets(Update, (Frame::Input, Frame::Act, Frame::Draw).chain())
+        .add_plugins((
+            controls::ControlsPlugin,
+            lens::LensPlugin,
+            stage::StagePlugin,
+            figures::FiguresPlugin,
+            book::BookPlugin,
+            runtime::RuntimePlugin,
+        ));
+    match app.run() {
+        AppExit::Success => ExitCode::SUCCESS,
+        AppExit::Error(e) => ExitCode::from(e.get()),
+    }
+}

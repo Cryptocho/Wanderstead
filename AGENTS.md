@@ -2,7 +2,7 @@
 
 ## 1. 工作目标与资料
 
-这是一个使用 **Rust + Bevy** 开发的单机传统 Roguelike RPG。当前阶段是为日式西幻的第一段可玩体验选题。
+这是一个使用 **Rust + Bevy** 开发的单机传统 Roguelike RPG。第一个可玩小样是 §19 的「旅店外的李子」。
 
 - 开始任务前，阅读 `game-design-notes.md` 中与任务有关的章节。
 - `reference/` 保存研究与参考资料。借鉴其机制、叙事和美术方法，创作本作自己的内容。
@@ -22,7 +22,7 @@
 - 手动状态等待玩家行动。自动行动可观察、可暂停、可接管。
 - 每个存档是一名固定主角和唯一一支外出队伍。
 - 地图逻辑使用二维网格。场景使用 HD-2D：2D 角色与 3D 环境结合。
-- 镜头采用固定方向的高角度斜俯视，允许缩放。当前不制作战术高度差和复杂可破坏地形。
+- 镜头固定朝北。默认是能看清脚下和周围地格的高角度俯视，构图参照 `temp/preview/`。放大时同时拉近距离、降低俯角，抵近人物眼高时成为真正平视；缩小走同一条曲线返回。当前不制作战术高度差和复杂可破坏地形。
 - 据点与远处区域按经过的游戏时间抽象结算。当前没有真实时间驱动的离线成长。
 
 ## 3. 原生桌面运行与性能测试
@@ -36,10 +36,10 @@
 - 后端选择方法必须符合目标工程所用的 winit / Bevy 版本。运行失败时报告具体原因；性能验证不得改用 XWayland、离屏模式或软件渲染替代。
 - 纯逻辑测试可以无窗口运行。它们不替代桌面画面与性能验证。
 
-主工程已回到设计基线，根目录暂时没有可运行的小样。要查看独立的早期 `temp/` 视觉原型，可运行：
+在根目录用 `cargo run --locked` 启动；构建产物留在 `target/`。根工程只启用 Wayland 窗口后端。默认 Cargo feature `dev-dylib` 启用 `bevy/dynamic_linking`，开发构建优化依赖。测发布性能用 `cargo run --locked --release --no-default-features`，不携带 Bevy 开发动态库。另有独立的早期 `temp/` 神殿原型：
 
 ```sh
-(cd temp && env -u DISPLAY cargo run --release)
+(cd temp && env -u DISPLAY cargo run --locked --release)
 ```
 
 此命令保留 Wayland 会话，只为本次进程移除 X11 的 `DISPLAY`。原型锁定的 winit 0.30.13 已移除 `WINIT_UNIX_BACKEND`，不要用该变量选择后端。Bevy 0.16.1 的标准 `WinitPlugin` 也没有暴露强制 Wayland 的 builder 配置字段。依据：[winit 变更记录](https://github.com/rust-windowing/winit/blob/v0.30.13/src/changelog/v0.29.md)、[Bevy WinitPlugin 源码](https://github.com/bevyengine/bevy/blob/v0.16.1/crates/bevy_winit/src/lib.rs)。
@@ -218,6 +218,7 @@ PixelLab 的房间图、地图和瓦片首先是图像资产。HD-2D 场景里�
 - 为效果提供可调参数与开关。使用同一镜头检查开关前后，记录性能变化。
 - 检查透明叠加、阴影、shader 分支、采样次数与分辨率的成本。跨镜头缩放检查像素闪烁与图集接缝。
 - 景深、bloom、雾与调色服务构图。敌我轮廓、交互物、状态和行动范围保持可辨。
+- 常驻 HUD 用有木纹与纸面的薄操作条；需细读的手记和用餐选择使用有书脊、页边和装订细节的纸页。近端平视时给靴子留位置，投掷时给目标格留位置；以默认和最近两端的真实操作画面判断。
 
 ## 7. 实现与交付
 

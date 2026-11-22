@@ -1,0 +1,24 @@
+Wanderstead travel stationery
+
+All PNG illustrations, paper fibres, oak grain, leather binding and copper fittings:
+original procedural artwork authored for this project in tools/make_book.py.
+tools/make_book_road.py derives the compact roadside strip and field tag from
+the same original paper grain and binding; the complete folio texture is retained.
+Deterministic seed: 49018. No third-party game artwork or photographs used.
+Packed UI uses fixed-size PNG panels and a nine-sliced button. No transparent panel fill.
+art/book/road-reference.png is a material/typesetting reference, NOT a game screenshot.
+
+Font: Fusion Pixel Font, TakWolf and upstream contributors.
+Unmodified fusion-pixel-12px-proportional-zh_hans.ttf, release 2026.11.10.
+https://github.com/TakWolf/fusion-pixel-font
+https://github.com/TakWolf/fusion-pixel-font/releases/tag/2026.11.10
+Download: https://github.com/TakWolf/fusion-pixel-font/releases/download/2026.11.10/fusion-pixel-font-12px-proportional-ttf-v2026.11.10.zip
+Bundled as FusionPixel.ttf, retaining its complete character map (not a subset).
+Font license: SIL Open Font License 1.1. All notices distributed in the upstream
+archive accompany this face under licenses/ (OFL.txt and LICENSES/).
+
+Rebuild artwork: uv run --with pillow python tools/make_book.py
+Rebuild compact rail only: uv run --with pillow python tools/make_book_road.py
+Glyph coverage: uv run --with fonttools python tools/make_book_glyphs.py
+The glyph report checks all Hanzi, punctuation, Latin characters and digits used
+by src/book.rs and src/game.rs. Main owns runtime and screenshot acceptance.

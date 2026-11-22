@@ -1,0 +1,30 @@
+{
+  "generator": "blender-4.5 + bpy; tools/make_lane.py",
+  "source": "Original geometry and deterministic pixel atlas by OpenAI for Wanderstead; no third-party artwork",
+  "coordinates": "glTF Y-up; north -Z; scene origin 0,0,0; metres",
+  "fruit_prefix": "ripe_plum_main_",
+  "secondary_fruit_prefix": "ripe_plum_secondary_",
+  "shake_pivot": "canopy_main at (5,0,-4)",
+  "materials": [
+    "Lane_Terrain",
+    "Lane_Stone",
+    "Lane_Plaster",
+    "Lane_Wood",
+    "Lane_Slate",
+    "Lane_Leaves",
+    "Lane_Plum",
+    "Lane_Copper",
+    "Lane_Ceramic",
+    "Lane_Linen",
+    "Lane_Earth"
+  ],
+  "mesh_nodes": 42,
+  "triangles": 132524,
+  "atlas": "lane_atlas.png 512x512 with 16 original 128px tiles; closest sampling; Lane_Leaves alpha silhouette",
+  "terrain": "lane_terrain.png 2048x1792 world-mapped pixel field with soft shoulders and wheel wear",
+  "roughness": "lane_roughness.png linear PBR roughness",
+  "normal_map": "lane_normal.png, original tangent-space grain/pits, non-colour, glTF normalTexture",
+  "secondary_fruit_maturity": "unripe green; shared Lane_Plum material with green atlas UVs",
+  "foliage": "lane_foliage.png: sixteen authored sun/shade/species sprig groups, shared MASK material",
+  "revision": "Bevy 11/12 screenshot revision: organic worn paths, retracted keeper shelf, grouped crowns, varied woodland and rolling 3D hills"
+}
