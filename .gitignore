@@ -1,0 +1,12 @@
+/target/
+/dist/
+/captures/
+__pycache__/
+*.blend1
+/legacy/
+/temp/
+/reference/Elin/
+/reference/OpenNefia/
+/reference/adventureland/
+/reference/*.pdf
+*.log
