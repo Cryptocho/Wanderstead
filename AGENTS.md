@@ -215,9 +215,10 @@ PixelLab 的房间图、地图和瓦片首先是图像资产。HD-2D 场景里�
 **光影是 HD-2D 的核心表现手段。主动尝试有表现力的 shader，并在真实场景中比较效果与开销。**
 
 - 先建立清楚的主光、环境光、接触阴影与冷暖层次，再调后处理。
+- 昼间聚落沿用[春晴市集](game-design-notes.md#昼间聚落的美术基准春晴市集)：对照[作者参考](reference/visual/market-morning-reference.webp)与[实机首选样张](reference/visual/market-morning-game.webp)。`assets/inks/market-morning.json` 统一太阳方位、天光、曝光、泛光、景深和铺地的反射率；用日照和檐影下的同一种石、窗芯、水波分别定标。调整太阳角度后重出树隙、光照场与反射探针。
 - 让光源、发光体和实际照亮的区域互相对应。像素人物与 3D 环境共享可信的空间关系。
 - 可探索水面与岸边交互、体积雾与光束、植被风动、庇护边界、权柄纹样、受击与异变等效果。
-- 新地区先标定露天、檐下、灯下三个站位。`tools/make_spring_probes.py` 生成漫反射与多级镜面探针；大体块、屋顶或水门改动后运行 `blender-4.5 -b --python-exit-code 1 --python tools/bake_sky_shelter.py`，让静态几何限制间接天光。火把、人物和水面反光仍实时变化。
+- 新地区先标定露天、檐下、灯下三个站位。`python3 tools/make_spring_probes.py` 生成漫反射与多级镜面探针；建筑改动后运行 `blender-4.5 -b --python-exit-code 1 --python tools/bake_sky_shelter.py`。它从最终几何烘出四个高度的天光可见度；日照镇区另烘晒到太阳的砌石对附近立面的反光与地表短程遮蔽。人物、树影和水面高光仍实时变化。
 - 参与遮挡的颜色材质复用 `inks/sight_cutaway.wgsl`。轮廓来自正在显示的动画、镜头投影和脚点，透明后中心的鼠标射线使用同一轮廓。加入新主角姿势时同步更新 `tools/make_figures.py` 的轮廓图；至少检查侧面和低俯角下的建筑、前景精灵。
 - 为效果提供可调参数与开关。使用同一镜头检查开关前后，记录性能变化。
 - 检查透明叠加、阴影、shader 分支、采样次数与分辨率的成本。跨镜头缩放检查像素闪烁与图集接缝。

@@ -3,10 +3,13 @@ Run: python3 tools/make_spring_probes.py (NumPy). No runtime convolution or read
 Faces follow DDS order; Bevy reverses Z when looking up an environment-map reflection.
 """
 from pathlib import Path
-import math,struct
+import json,math,struct
 import numpy as np
 
 OUT=Path(__file__).resolve().parents[1]/'assets/inks'
+SQUARE=json.loads((OUT/'market-morning.json').read_text())['sun']
+az,el=map(math.radians,(SQUARE['bearing_deg'],SQUARE['elevation_deg']))
+SUN=(math.sin(az)*math.cos(el),math.sin(el),-math.cos(az)*math.cos(el))
 
 def normalize(v):return v/np.maximum(1e-9,np.linalg.norm(v,axis=-1,keepdims=True))
 def smooth(a,b,x):
@@ -16,12 +19,14 @@ def mix(a,b,t):return np.array(a)+(np.array(b)-a)*t[...,None]
 def radiance(d,town):
     x,y,z=np.moveaxis(d,-1,0);az=np.arctan2(x,-z)
     if town:
-        sky=mix((1.08,1.17,1.08),(.26,.60,1.13),smooth(.03,.94,y))
+        sky=mix((1.10,1.15,1.25),(.36,.62,1.14),smooth(.03,.94,y))
         slope=.11+.16*(1+np.sin(az*3.3+.75))*.5+.06*np.cos(az*9.)
         roofs=mix((.19,.25,.32),(.83,.34,.14),smooth(-.4,.7,np.cos(az*3.)))
-        street=mix((.30,.22,.17),(.66,.57,.37),smooth(-.98,-.20,y))
+        street=mix((.35,.23,.19),(.69,.54,.45),smooth(-.98,-.20,y))
         lower=mix(street,roofs,smooth(-.16,-.06,y));color=mix(lower,sky,smooth(slope-.025,slope+.015,y))
-        lights=[((-.68,.58,.46),10,(1.22,.92,.55)),((.48,.12,.87),24,(.52,1.0,.93))]
+        # Sky in the shade; the warm broad lobe and pin glint share the live sun's bearing.
+        key=np.array(SQUARE['srgb'])**2.2
+        lights=[(SUN,14,1.10*key),(SUN,350,5.2*key),((.54,.10,.83),16,(.53,.36,.26))]
     else:
         color=mix((.062,.115,.19),(.055,.090,.16),smooth(-.30,.85,y))
         color+=np.maximum(-y,0)[...,None]*np.array((.020,.24,.23))

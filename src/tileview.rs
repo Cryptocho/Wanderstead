@@ -607,10 +607,23 @@ fn paint_tiles(
                     ),
                 ] {
                     if show {
-                        let dir = (b - a).normalize();
+                        let dir = b - a; // each edge is exactly one metre
                         let rim = Vec2::new(-dir.y, dir.x) * 0.016;
-                        ink.line(a, b, 0.036, 0.032, [0.015, 0.019, 0.030, 0.60]);
-                        ink.line(a + rim, b + rim, 0.039, 0.013, [0.69, 0.72, 0.64, 0.36]);
+                        if game.area == Area::Town {
+                            // A survey score in the flags, with just a little chipped lip
+                            // at the junction. A continuous white bevel would light up in shade.
+                            ink.line(a, b, 0.036, 0.021, [0.061, 0.050, 0.058, 0.34]);
+                            ink.line(
+                                a + rim,
+                                a + rim + dir * 0.14,
+                                0.039,
+                                0.012,
+                                [0.58, 0.49, 0.39, 0.29],
+                            );
+                        } else {
+                            ink.line(a, b, 0.036, 0.032, [0.015, 0.019, 0.030, 0.60]);
+                            ink.line(a + rim, b + rim, 0.039, 0.013, [0.69, 0.72, 0.64, 0.36]);
+                        }
                     }
                 }
                 // Survey nail at the northwest corner of the square: still

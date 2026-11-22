@@ -65,7 +65,6 @@ sources = {
     "traveler-diagonal": cells("traveler-diagonal.png", 4, 4),
     "traveler-actions": cells("traveler-short-actions.png", 4, 4),
     "traveler-combat": cells("traveler-combat.png", 4, 4),
-    "keeper-work": cells("keeper-short-work.png", 4, 2),
     "copper-sentry": cells("copper-sentry.png", 4, 4),
     "phosphor-moth": cells("phosphor-moth.png", 4, 4),
 }
@@ -84,6 +83,7 @@ palette = palette_source.quantize(colors=96, method=Image.Quantize.MEDIANCUT)
 metadata = {
     "palette_colors": 96, "sampler": "nearest", "alpha": "binary",
     "padding_below_feet": 2, "anatomy": "original short 2.5-3-head figures; uniform scale only",
+    "trade_cycles": "trade-atlas-layout.json",
 }
 atlases = {}
 
@@ -119,7 +119,6 @@ export("traveler-walk", 4, 4, (160,128), 108, ["south","west","north","east"])
 export("traveler-diagonal",4,4,(160,128),108,["southwest","northwest","northeast","southeast"])
 export("traveler-actions", 4, 4, (160,128), 108, ["gather","shake","throw","eat"])
 export("traveler-combat", 4, 4, (160,128), 108, ["strike","brace","hurt/down","drink"], 2)
-export("keeper-work", 4, 2, (160,128), 108, ["stir","knead"])
 export("copper-sentry", 4, 4, (128,128), 108, ["idle","prepare","strike","down"], 1)
 export("phosphor-moth", 4, 4, (128,128), 94, ["idle","prepare","dive","down"], 1)
 export("jelly", 4, 2, (96,96), 78, ["hop","swallow"])
@@ -183,3 +182,6 @@ sample = atlases["traveler-walk"].crop((0,0,640,128))
 sample.resize((1280,256), Image.Resampling.NEAREST).save(ART / "traveler-sample.png")
 (ART / "atlas-layout.json").write_text(json.dumps(metadata, indent=2)+"\n")
 print("Exported walking and action atlases, pose contours, portrait and silhouette study.")
+
+# Trade workers use held object key poses and per-boot anchoring.
+import make_trade_figures

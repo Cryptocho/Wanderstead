@@ -13,6 +13,7 @@ use bevy::{
 };
 
 use crate::{
+    daylight::{Optics, SQUARE},
     figures::PlayerVisual,
     game::{Outing, ground},
     map::Area,
@@ -106,6 +107,38 @@ fn aspect_span(span: f32, window: &Window) -> f32 {
     span * (1.50 / aspect.max(0.45)).max(1.0)
 }
 
+/// Work at the actor's actual view depth through the whole dolly, not its distance
+/// from the look-at target. Scale the blur limit in the same units as an art pixel.
+fn focus(
+    foot: Vec3,
+    eye: &Transform,
+    area: Area,
+    wide: f32,
+    height_px: u32,
+    on: bool,
+) -> DepthOfField {
+    let (sensor, stops, limit) = if area == Area::Town {
+        let f = &SQUARE.focus;
+        (
+            f.sensor_m,
+            f.f_stops,
+            f.limit_px_at_1440 * height_px as f32 / 1440.,
+        )
+    } else {
+        ([0.045, 0.180], [3.8, 1.65], 9.0)
+    };
+    DepthOfField {
+        mode: DepthOfFieldMode::Gaussian,
+        focal_distance: (foot - eye.translation)
+            .dot(*eye.forward())
+            .clamp(0.2, 1000.),
+        sensor_height: sensor[0].lerp(sensor[1], wide),
+        aperture_f_stops: stops[0].lerp(stops[1], wide),
+        max_circle_of_confusion_diameter: if on { limit } else { 0.0 },
+        max_depth: 1000.0,
+    }
+}
+
 fn install_camera(
     mut commands: Commands,
     outing: Res<Outing>,
@@ -117,8 +150,6 @@ fn install_camera(
     state.distance = distance;
     let foot = ground(outing.player);
     let pose = viewpoint(target(foot, wide, outing.area), pitch, distance);
-    let focal_distance = (foot - pose.translation).dot(*pose.forward()).max(0.2);
-    // StagePlugin owns the lighting, bloom and distance fog on this camera.
     commands.spawn((
         Name::new("North-facing continuous orthographic dolly"),
         Camera3d::default(),
@@ -133,19 +164,27 @@ fn install_camera(
             far: 1200.0,
             ..default()
         }),
-        // Meter the painted mids, including the cloth and the shaded inn porch.
-        Exposure { ev100: 12.0 },
+        Exposure {
+            ev100: SQUARE.film.ev100,
+        },
         Tonemapping::AcesFitted,
         Msaa::Off,
+        // spring::meter installs the active area's values before the first render.
+        (
+            EnvironmentMapLight::default(),
+            DistanceFog::default(),
+            bevy::pbr::ClusterConfig::default(),
+            SQUARE.film.bloom(),
+        ),
         ShadowFilteringMethod::Gaussian,
-        DepthOfField {
-            mode: DepthOfFieldMode::Gaussian,
-            focal_distance,
-            sensor_height: 0.180,
-            aperture_f_stops: 1.65,
-            max_circle_of_confusion_diameter: 9.0,
-            max_depth: 1000.0,
-        },
+        focus(
+            foot,
+            &pose,
+            outing.area,
+            wide,
+            window.physical_height(),
+            true,
+        ),
         pose,
     ));
 }
@@ -155,6 +194,7 @@ fn move_camera(
     scroll: Res<AccumulatedMouseScroll>,
     time: Res<Time>,
     outing: Res<Outing>,
+    optics: Res<Optics>,
     mut state: ResMut<LensState>,
     window: Single<&Window, With<PrimaryWindow>>,
     player: Query<&Transform, (With<PlayerVisual>, Without<Camera3d>)>,
@@ -198,11 +238,12 @@ fn move_camera(
     if let Projection::Perspective(p) = &mut *projection {
         p.fov = (aspect_span(span, &window) / (2.0 * distance)).atan() * 2.0;
     }
-    dof.focal_distance = (foot - pose.translation)
-        .dot(*pose.forward())
-        .clamp(0.2, 1000.0);
-    // Tilt-shift depth separation belongs to overhanging roofs and the far arcade.
-    // At eye level use a less extreme lens so a nearby target remains readable.
-    dof.sensor_height = 0.045_f32.lerp(0.180, wide);
-    dof.aperture_f_stops = 3.8_f32.lerp(1.65, wide);
+    *dof = focus(
+        foot,
+        &pose,
+        outing.area,
+        wide,
+        window.physical_height(),
+        optics.dof,
+    );
 }

@@ -2,7 +2,7 @@
 
 旅店门口落了一颗李子，镇上的泉却一早就断了。北水门底下有一条旧回水廊：西边是修理工的工具箱，东边的铜架上还挂着手轮。去的时候有两条路，回来时得留点力气。
 
-Bevy 游戏实图：[泉市与可点击的石路](reference/visual/copper-square-game.webp) · [地宫交战](reference/visual/spring-cistern-game.webp) · [挑选器物](reference/visual/spring-journal-game.webp) · [归还手轮后的平视](reference/visual/spring-wheel-game.webp)。
+Bevy 实机：[铜壶镇的春晴市集](reference/visual/market-morning-game.webp) · [静站看居民、风和泉水（动图）](reference/visual/market-morning-life.webp) · [地宫交战](reference/visual/spring-cistern-game.webp) · [挑选器物](reference/visual/spring-journal-game.webp) · [镇泉平视](reference/visual/spring-wheel-game.webp)。
 
 ## 启动
 
@@ -16,13 +16,12 @@ cargo run --locked
 
 发布构建：`cargo run --locked --release --no-default-features`，关闭开发动态链接。目标为原生 2560×1440、FIFO 垂直同步；默认尝试 100 FPS，持续达不到则切到 50。`-- --fps 50` 可从启动时锁定半刷新档。
 
-本机发布实测：Ryzen 5 5500、RX 6500 XT、RADV / Mesa 26.1.8、Wayfire，原生 2560×1440 / 100 Hz，Vulkan、FIFO。窗口保持前台，默认光照、像素层与景深。自动切到 50 档并预热后，各采连续 600 帧（约 12 秒）；采样期间未截屏。帧间隔包含限帧等待，不是 GPU 单个阶段的耗时。
+春晴市集发布实测：Ryzen 5 5500、RX 6500 XT、RADV / Mesa 26.1.8、Wayfire，原生 2560×1440 / 100 Hz，Vulkan、FIFO。窗口在前台，HUD 隐藏，像素、泛光、景深、局部空气和居民动作全开。修好泉台、自动切到 50 档并预热后，每个机位各采连续 600 帧（约 12 秒）；采样时没有截图或启用 GPU 诊断。下表是包含限帧等待的帧间隔。
 
 | 场景 | 平均 FPS | 中位帧时 | P95 | P99 |
 |---|---:|---:|---:|---:|
-| 已修复的镇泉，十字街俯视并显示斜向鼠标路线 | 50.00 | 20.000 ms | 20.003 ms | 20.016 ms |
-| 回水廊东翼，萤石与灯同时可见，飞蛾锁定下一拍 | 50.00 | 20.000 ms | 20.003 ms | 20.005 ms |
-| 镇街实际走动、连续推到平视再拉回 | 50.00 | 20.000 ms | 20.003 ms | 20.005 ms |
+| 十字街 `(0,1)`，默认 54° 俯视，三组居民与喷泉同屏 | 50.00 | 20.000 ms | 20.004 ms | 20.009 ms |
+| 泉台西南 `(3,4)`，拉至 0° 平视，距离 4.8 m | 50.00 | 20.000 ms | 20.005 ms | 20.009 ms |
 
 ## 游玩
 
@@ -37,10 +36,20 @@ cargo run --locked
 
 ## 设计与制作
 
-[设计笔记 §19](game-design-notes.md#first-outing)记录这场短冒险的取舍。[RPG Maker 地图参考](reference/roguelike-worldbuilding-research.md#rpg-maker-maps)分析《Ara Fell》原版和《Grimm’s Hollow》的实际画面。[镇场概念](reference/visual/copper-square-study.webp)和[回水廊概念](reference/visual/spring-cistern-study.webp)是生成的美术参考；页首四张是游戏窗口截图。
+[设计笔记 §19](game-design-notes.md#first-outing)记录这场短冒险。[春晴市集](game-design-notes.md#昼间聚落的美术基准春晴市集)保留了作者给的画面参照与本作实景。[镇场概念](reference/visual/copper-square-study.webp)和[回水廊概念](reference/visual/spring-cistern-study.webp)是美术概念图。[RPG Maker 地图参考](reference/roguelike-worldbuilding-research.md#rpg-maker-maps)分析《Ara Fell》原版和《Grimm’s Hollow》的地图。
 
 `assets/maps/*.grid` 同时定义地板、阻挡、交互位置和小地图。3D 源文件及原画在 `art/lane/`、`art/cistern/`、`art/market/`；人物、界面和器皿在 `art/figures/`、`art/book/`、`art/inks/`。`tools/` 保留 `blender-4.5` / `bpy` 与图集加工脚本。主游戏不依赖 `temp/` 的参考原型。
 
-各区的漫反射和多级镜面探针由 `python3 tools/make_spring_probes.py` 离线生成；`tools/bake_sky_shelter.py` 用 Blender 从最终 GLB 的真实建筑烘出四个高度的天空可见度。树冠和岸石从 `tools/make_verge_sprites.py` 分离，再交给路面和布景烘焙。`tools/make_figures.py` 导出八向走姿和 64 帧人物轮廓。[前景遮挡实测：同一机位，左关右开](reference/visual/spring-sight-cut.webp)。鼠标射线也能穿过淡出的中心。
+昼间聚落的日光、天光、石路反射率、曝光、泛光和景深共用 `assets/inks/market-morning.json`。铜壶镇的 Blender 制作顺序：
+
+```sh
+blender-4.5 -b --python-exit-code 1 --python tools/make_lane.py -- --export-only
+blender-4.5 -b --python-exit-code 1 --python tools/bake_sky_shelter.py -- --town-only
+python3 tools/make_spring_probes.py
+```
+
+第一步用同一太阳方向给果树留出真实的透光缝，导出建筑、路面与活动篷布。第二步烘焙短程接触阴影，以及四层高度的天光与街面反光；第三步生成漫反射、不同粗糙度的镜面探针。`tools/make_figures.py` 导出八向走姿和 64 帧主人物轮廓，`tools/make_trade_figures.py` 加工柜台、泉台和水门边的三个生活动作图集。[前景遮挡实测](reference/visual/spring-sight-cut.webp)左关右开，鼠标射线也能穿过淡出的中心。
 
 开发：`--qa /绝对路径/qa.sock` 开启本地 Unix datagram 接口。`state`、`expedition`、`project X Z [高度]`、`pick X Y` 查询实况；`pointer X Y`、`mouse down|up`、`key kp9 down|up`、`scroll 3` 走实际输入链。`sight [on|off]` 仅用于在原机位比较前景裁切。`capture NAME` 读回窗口，`measure` / `stats` 采集连续 600 帧，`exit` 退出。正常启动不监听 socket。可选 `WANDERSTEAD_GPU_PROFILE=1` 开启 Bevy 渲染阶段诊断；`passes` 返回 GPU 毫秒均值。
+
+美术对照：`optics` 读取状态，`optics bloom off`、`optics dof off`、`optics air off` 分别关闭泛光、景深或广场局部空气与飘瓣，将 `off` 换成 `on` 恢复。镜头、光源和游戏回合保持原位。

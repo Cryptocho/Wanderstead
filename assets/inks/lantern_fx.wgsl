@@ -1,6 +1,6 @@
 #import bevy_pbr::{forward_io::VertexOutput,mesh_view_bindings::globals}
 #import "inks/sight_cutaway.wgsl"::hides_traveler
-@group(2) @binding(0) var<uniform> settings:vec4<f32>; // fire, smoke, fireflies, leak; phase, strength
+@group(2) @binding(0) var<uniform> settings:vec4<f32>; // kind, phase, strength, variant
 fn hash(v:vec2<f32>)->f32 {return fract(sin(dot(v,vec2<f32>(37.37,73.21)))*3789.197);}
 @fragment fn fragment(v:VertexOutput)->@location(0) vec4<f32> {
     let uv=(floor(v.uv*vec2<f32>(28.0,42.0))+vec2<f32>(.5))/vec2<f32>(28.0,42.0);
@@ -8,6 +8,47 @@ fn hash(v:vec2<f32>)->f32 {return fract(sin(dot(v,vec2<f32>(37.37,73.21)))*3789.
     let k=settings.x;
     if (k<3.5 || k>4.5) && hides_traveler(v.position,v.world_position.y){discard;}
     let h=1.0-uv.y;
+    // Outdoor air is confined to authored apertures and individual blossoms.
+    // Unlike the indoor effects, its edges are continuous rather than card-sized pixels.
+    if k>9.5 {
+        let fallen=settings.w>1.5;
+        let glint=settings.w>.5 && !fallen;
+        let phase=min(1.,1.8*fract(globals.time/(8.5+4.*fract(settings.y*.31))+settings.y*.17));
+        // Rectangles have V=0 at their top: a falling petal moves toward V=1.
+        let center=select(vec2<f32>(.38+.23*phase+.12*sin(phase*8.+settings.y),.12+.74*phase),vec2<f32>(.5),fallen);
+        let d=(v.uv-center)*vec2<f32>(1.,1.25);
+        let flutter=select(.75+.25*sin(phase*19.+settings.y),.86,fallen);
+        let petal=1.-smoothstep(.040,.066,abs(d.x)*flutter+abs(d.y)*.73);
+        let life=select(smoothstep(.02,.13,phase)*(1.-smoothstep(.63,.85,phase)),1.,fallen);
+        if glint {
+            let blink=pow(max(0.,sin(phase*6.28318+settings.y)),18.);
+            let point=exp(-dot(d,d)*2600.);
+            let a=point*blink*settings.z*life;
+            if a<.012 {discard;}
+            return vec4<f32>(vec3<f32>(1.25,1.05,.72),a*.55);
+        }
+        let a=petal*life*settings.z;
+        if a<.02 {discard;}
+        return vec4<f32>(mix(vec3<f32>(.73,.33,.39),vec3<f32>(1.,.72,.68),smoothstep(-.04,.04,d.x+d.y)),a);
+    }
+    if k>8.5 {
+        // Small, stationary pockets at distant masonry. No world-covering plane.
+        let q=(v.uv-.5)*vec2<f32>(2.,2.25);
+        let falloff=pow(max(0.,1.-dot(q,q)),2.);
+        let a=falloff*settings.z;
+        if a<.001 {discard;}
+        return vec4<f32>(vec3<f32>(.50,.61,.74),a);
+    }
+    if k>7.5 {
+        let u=v.uv;
+        let width=1.-smoothstep(.08,.49,abs(u.x-.5));
+        let ends=smoothstep(0.,.13,u.y)*(1.-smoothstep(.48,1.,u.y));
+        // Broad, very slow density variations never become isolated glitter pixels.
+        let density=.84+.11*sin(u.y*9.+u.x*4.+t*.13+settings.y);
+        let a=settings.z*width*ends*density;
+        if a<.001 {discard;}
+        return vec4<f32>(vec3<f32>(1.,.87,.65),a);
+    }
     if k<.5 {
         let bend=(sin(t*5.7+h*6.0)*.077+sin(t*3.8-h*12.0)*.030)*h;
         let x=abs(uv.x-.5-bend);
@@ -46,19 +87,6 @@ fn hash(v:vec2<f32>)->f32 {return fract(sin(dot(v,vec2<f32>(37.37,73.21)))*3789.
         let bank=1.-smoothstep(.03,.33,abs(u.y-h0));
         let layers=.30+.27*sin(u.x*13.+t*.37)+.24*cos(u.x*6.-t*.29);
         return vec4<f32>(vec3<f32>(.34,.54,.66),sides*bank*max(layers,0.)*.26);
-    }
-    if k>5.5 {
-        // A few petals follow separate gusts down from real tree crowns.
-        let px=floor(v.uv*vec2<f32>(92.,72.))+.5;
-        for(var i=0;i<6;i=i+1){
-            let seed=f32(i);let phase=fract(t*.073+seed*.167);
-            let c=vec2<f32>(7.+fract(seed*.37)*65.+phase*9.+6.*sin(phase*9.+seed),phase*72.);
-            let d=abs(px-c);let fade=smoothstep(.03,.19,phase)*(1.-smoothstep(.66,.96,phase));
-            if d.x+d.y*1.4<1.0+.82*sin(seed+phase*6.)*sin(seed+phase*6.) {
-                return vec4<f32>(mix(vec3<f32>(1.,.58,.63),vec3<f32>(.70,.94,.25),settings.w),fade*.87);
-            }
-        }
-        discard;
     }
     if k>4.5 {
         let u=v.uv;

@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 
 use bevy::{
-    core_pipeline::{Skybox, bloom::Bloom},
+    core_pipeline::Skybox,
     pbr::{ExtendedMaterial, MaterialExtension},
     prelude::*,
     render::render_resource::{
@@ -28,7 +28,6 @@ impl Plugin for StagePlugin {
                 (
                     toggle_palette,
                     switch_region,
-                    add_atmosphere,
                     bind_sky.run_if(resource_exists::<MorningSky>),
                     bind_stage_surfaces,
                     bind_tree_nodes,
@@ -82,6 +81,11 @@ pub struct WorldPalette {
     /// 1 = town flags, 2 = cistern flags. Other surfaces keep their own patina.
     #[uniform(100)]
     pub floor_style: Vec4,
+    #[uniform(100)]
+    pub sunward: Vec4,
+    /// The town GLB stores opaque color maps with hardware linear filtering.
+    #[uniform(100)]
+    single_tap: u32,
     #[texture(101)]
     pub site: Handle<Image>,
     #[storage(102, read_only, buffer, visibility(fragment))]
@@ -91,6 +95,9 @@ pub struct WorldPalette {
     #[texture(105)]
     #[sampler(106)]
     shelter: Handle<Image>,
+    #[texture(107)]
+    #[sampler(108)]
+    contact: Handle<Image>,
 }
 
 impl MaterialExtension for WorldPalette {
@@ -113,7 +120,15 @@ struct TreeNodeBound;
 #[derive(Component)]
 struct TreeSway {
     rest: Transform,
-    trunk: bool,
+    kind: SwayKind,
+    phase: f32,
+}
+
+#[derive(Clone, Copy)]
+enum SwayKind {
+    Crown { shake: bool },
+    Trunk,
+    Awning,
 }
 #[derive(Component)]
 struct RipeFruit;
@@ -151,6 +166,9 @@ struct StageProps {
 
 #[derive(Resource)]
 pub(crate) struct SiteEdges(pub Handle<Image>);
+
+#[derive(Resource)]
+struct GroundContact(Handle<Image>);
 
 #[derive(Resource)]
 pub(crate) struct SkyShelter {
@@ -243,6 +261,7 @@ fn create_regions(
         town: field("inks/square-shelter.png"),
         cistern: field("inks/cistern-shelter.png"),
     });
+    commands.insert_resource(GroundContact(field("inks/square-contact.png")));
     commands.insert_resource(site_edges(&mut images));
     let town = commands
         .spawn((
@@ -401,33 +420,6 @@ fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regi
     });
 }
 
-fn add_atmosphere(mut commands: Commands, cameras: Query<Entity, Added<Camera3d>>) {
-    for entity in &cameras {
-        commands.entity(entity).insert((
-            EnvironmentMapLight::default(),
-            bevy::pbr::ClusterConfig::FixedZ {
-                total: 576,
-                z_slices: 4,
-                z_config: default(),
-                dynamic_resizing: true,
-            },
-            DistanceFog {
-                color: Color::srgb(0.61, 0.76, 0.85),
-                directional_light_color: Color::srgba(1.0, 0.86, 0.65, 0.18),
-                directional_light_exponent: 12.0,
-                falloff: FogFalloff::Linear {
-                    start: 33.0,
-                    end: 105.0,
-                },
-            },
-            Bloom {
-                intensity: 0.085,
-                ..Bloom::NATURAL
-            },
-        ));
-    }
-}
-
 fn bind_sky(
     mut commands: Commands,
     sky: Res<MorningSky>,
@@ -444,7 +436,7 @@ fn bind_sky(
     });
     commands.entity(*camera).insert(Skybox {
         image: sky.0.clone(),
-        brightness: 6400.0,
+        brightness: crate::daylight::SQUARE.sky.skybox_brightness,
         ..default()
     });
     commands.remove_resource::<MorningSky>();
@@ -481,6 +473,7 @@ fn bind_stage_surfaces(
     palette: Res<PaletteState>,
     site: Res<SiteEdges>,
     shelter: Res<SkyShelter>,
+    contact: Res<GroundContact>,
     sight: Res<crate::sight::SightWindow>,
     names: Query<&Name>,
     flowing: Single<Entity, With<crate::spring::Refilled>>,
@@ -500,16 +493,21 @@ fn bind_stage_surfaces(
             .or_insert_with(|| {
                 let mut base = base.clone();
                 if name.is_some_and(|n| n.0 == "Lane_Glass") {
-                    base.emissive_texture = base.base_color_texture.clone();
-                    base.emissive = LinearRgba::rgb(2.1, 1.12, 0.37);
+                    // The authored emission map contains only two narrow warm
+                    // cores; the surrounding panes keep their normal PBR.
+                    base.emissive = LinearRgba::rgb(5.2, 3.1, 1.4);
                 }
                 materials.add(ExtendedMaterial {
                     base,
                     extension: WorldPalette {
+                        sunward: crate::daylight::SQUARE.to_sun()
+                            .extend(crate::daylight::SQUARE.film.bloom_threshold),
+                        single_tap: u32::from(name.is_some_and(|m| m.0.starts_with("Lane_"))),
                         settings: palette.uniform(),
                         window: sight.buffer.clone(),
                         contour: sight.contour.clone(),
                         shelter: shelter.town.clone(),
+                        contact: contact.0.clone(),
                         floor_style: Vec4::new(
                             match name.map(|m| m.0.as_str()) {
                                 Some("Lane_Paving") => 1.,
@@ -517,8 +515,16 @@ fn bind_stage_surfaces(
                                 _ => 0.,
                             },
                             0.,
-                            0.,
-                            0.,
+                            match name.map(|m| m.0.as_str()) {
+                                Some("Lane_CrownFresh" | "Lane_Leaves") => 1.,
+                                Some("Lane_CrownBlossom" | "Lane_Petals") => 2.,
+                                _ => 0.,
+                            },
+                            if name.is_some_and(|m| m.0.starts_with("Lane_")) {
+                                1.
+                            } else {
+                                0.
+                            },
                         ),
                         site: site.0.clone(),
                     },
@@ -592,7 +598,7 @@ fn sync_palette(
 
 fn bind_tree_nodes(
     mut commands: Commands,
-    nodes: Query<(Entity, &Name, &Transform), Without<TreeNodeBound>>,
+    nodes: Query<(Entity, &Name, &Transform), (Without<TreeNodeBound>, Without<Mesh3d>)>,
     roots: Query<&StageRoot>,
     parents: Query<&ChildOf>,
 ) {
@@ -615,16 +621,23 @@ fn bind_tree_nodes(
                     .entity(entity)
                     .insert(OldWorks::TonicLid(transform.rotation));
             }
-            "canopy_main" => {
+            name if name.starts_with("canopy_")
+                || name.starts_with("awning_")
+                || name == "trunk_main" =>
+            {
+                let kind = if name.starts_with("awning_") {
+                    SwayKind::Awning
+                } else if name == "trunk_main" {
+                    SwayKind::Trunk
+                } else {
+                    SwayKind::Crown {
+                        shake: name == "canopy_main",
+                    }
+                };
                 commands.entity(entity).insert(TreeSway {
                     rest: *transform,
-                    trunk: false,
-                });
-            }
-            "trunk_main" => {
-                commands.entity(entity).insert(TreeSway {
-                    rest: *transform,
-                    trunk: true,
+                    kind,
+                    phase: transform.translation.x * 0.71 + transform.translation.z * 1.13,
                 });
             }
             name if name.starts_with("ripe_plum_main_") => {
@@ -662,11 +675,19 @@ fn animate_trees(
     } else {
         0.0
     };
-    let breeze = (time.elapsed_secs() * 1.2).sin() * 0.0025;
+    let now = time.elapsed_secs();
     for (tree, mut transform) in &mut trees {
-        let amplitude = if tree.trunk { 0.014 } else { 0.065 };
-        transform.rotation = tree.rest.rotation
-            * Quat::from_rotation_z(shake * amplitude + if tree.trunk { 0.0 } else { breeze });
+        let wave = (now * 1.63 + tree.phase).sin() + 0.36 * (now * 2.71 + tree.phase * 1.7).sin();
+        let (x, z) = match tree.kind {
+            SwayKind::Crown { shake: responds } => (
+                wave * 0.008,
+                wave * 0.022 + if responds { shake * 0.065 } else { 0. },
+            ),
+            SwayKind::Trunk => (0., shake * 0.014),
+            SwayKind::Awning => (wave * 0.027, 0.),
+        };
+        transform.rotation =
+            tree.rest.rotation * Quat::from_rotation_x(x) * Quat::from_rotation_z(z);
     }
     for mut visible in &mut fruit {
         *visible = if outing.tree_shaken {

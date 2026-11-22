@@ -1,6 +1,8 @@
 //! Area-local light sources, falling water and the repaired fountain. No simulation lives here.
+mod market_air;
 use crate::{
     Frame,
+    daylight::{Optics, SQUARE, srgb},
     delve::Quest,
     game::Outing,
     lens::{LensSet, LensState},
@@ -104,6 +106,8 @@ struct Flicker {
 }
 #[derive(Component)]
 struct AirCard;
+#[derive(Component)]
+struct MarketAir;
 #[derive(Component)]
 struct Vent;
 #[derive(Component)]
@@ -221,7 +225,7 @@ fn build(
         town: probe(
             "inks/square-skyfill.dds",
             "inks/square-reflections.dds",
-            1200.,
+            SQUARE.sky.probe_intensity,
         ),
         cistern: probe(
             "inks/cistern-skyfill.dds",
@@ -241,8 +245,8 @@ fn build(
         Name::new("Sun above the copper roofs"),
         Sun,
         DirectionalLight {
-            illuminance: 30_000.,
-            color: Color::srgb(1., 0.86, 0.67),
+            illuminance: SQUARE.sun.lux,
+            color: srgb(SQUARE.sun.srgb),
             shadows_enabled: true,
             shadow_depth_bias: 0.008,
             shadow_normal_bias: 0.55,
@@ -253,7 +257,7 @@ fn build(
             minimum_distance: 321.,
             overlap_proportion: 0.06,
         },
-        Transform::from_xyz(-12., 20., 10.).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::IDENTITY.looking_to(-SQUARE.to_sun(), Vec3::Y),
     ));
     let notes = [
         (Area::Town, include_str!("../assets/lanes/lights.json")),
@@ -275,17 +279,23 @@ fn build(
             },
         );
     }
+    let sun = SQUARE.to_sun();
     let mut material = |mode: f32| {
         waters.add(ExtendedMaterial {
             base: StandardMaterial {
                 base_color: Color::srgb(0.14, 0.49, 0.52),
                 metallic: 0.27,
                 perceptual_roughness: 0.24,
+                alpha_mode: if mode == 0. {
+                    AlphaMode::Opaque
+                } else {
+                    AlphaMode::Blend
+                },
                 cull_mode: None,
                 ..default()
             },
             extension: WaterInk {
-                mode: Vec4::new(mode, 0., 0., 0.),
+                mode: Vec4::new(mode, sun.x, sun.y, sun.z),
                 lamps: reflections,
                 window: sight.buffer.clone(),
                 contour: sight.contour.clone(),
@@ -316,7 +326,7 @@ fn build(
             ChildOf(roots.town),
         ))
         .id();
-    let spring_surface = material(1.);
+    let vessel_surface = material(3.);
     let upward = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
     let vessels: [[f32; 4]; 3] =
         serde_json::from_str(include_str!("../assets/lanes/water-vessels.json"))
@@ -325,7 +335,7 @@ fn build(
     for [x, z, r, h] in vessels {
         c.spawn((
             Mesh3d(meniscus.clone()),
-            MeshMaterial3d(spring_surface.clone()),
+            MeshMaterial3d(vessel_surface.clone()),
             Transform::from_xyz(x, h - 0.044, z)
                 .with_rotation(upward)
                 .with_scale(Vec3::splat(r * 0.86)),
@@ -335,7 +345,7 @@ fn build(
     }
     c.spawn((
         Mesh3d(meshes.add(Circle::new(1.035).mesh().resolution(32))),
-        MeshMaterial3d(spring_surface),
+        MeshMaterial3d(material(1.)),
         Transform::from_xyz(4., 0.50, 2.).with_rotation(upward),
         NotShadowCaster,
         ChildOf(flowing),
@@ -347,35 +357,26 @@ fn build(
         ChildOf(flowing),
     ));
     let quad = meshes.add(Rectangle::new(1., 1.));
-    for (area, head, foot, width, power) in [
-        (Area::Town, [-6.1, 3.8, 1.8], [-2.6, 0.06, 3.4], 1.12, 0.095),
-        (Area::Town, [3.0, 3.9, -6.8], [5.6, 0.05, -4.5], 0.85, 0.075),
-        (
-            Area::Cistern,
-            [-1.4, 5.8, 6.4],
-            [0.3, 0.10, 3.4],
-            1.30,
-            0.16,
-        ),
-        (
-            Area::Cistern,
-            [-7.5, 3.2, -4.9],
-            [-6.2, 0.02, -3.2],
-            0.62,
-            0.10,
-        ),
+    let outdoor_air = c
+        .spawn((
+            Name::new("Air in the market"),
+            MarketAir,
+            Transform::default(),
+            Visibility::Inherited,
+            ChildOf(roots.town),
+        ))
+        .id();
+    market_air::spawn(&mut c, outdoor_air, &mut meshes, &quad, &mut air);
+    for (head, foot, width, power) in [
+        ([-1.4, 5.8, 6.4], [0.3, 0.10, 3.4], 1.30, 0.16),
+        ([-7.5, 3.2, -4.9], [-6.2, 0.02, -3.2], 0.62, 0.10),
     ] {
         c.spawn((
-            Name::new("Light through an opening"),
+            Name::new("Light through a cistern opening"),
             Mesh3d(meshes.add(shaft(head.into(), foot.into(), width))),
-            MeshMaterial3d(air(Vec4::new(
-                5.,
-                head[0],
-                power,
-                if area == Area::Town { 1. } else { 0. },
-            ))),
+            MeshMaterial3d(air(Vec4::new(5., head[0], power, 0.))),
             NotShadowCaster,
-            ChildOf(roots.root(area)),
+            ChildOf(roots.cistern),
         ));
     }
     c.spawn((
@@ -464,7 +465,9 @@ fn build(
                     PointLight {
                         color: hue,
                         intensity: power,
-                        range: if town { range.min(4.2_f32) } else { range },
+                        // A daylight shop wick fills its stall; spare cells across
+                        // the road need not enter that point-light cluster.
+                        range: if town { range.min(2.65) } else { range },
                         radius: 0.11,
                         shadows_enabled: cast,
                         shadow_normal_bias: 0.40,
@@ -508,37 +511,15 @@ fn build(
             ChildOf(roots.town),
         ));
     }
-    for (p, a) in [
-        (Vec3::new(-3.25, 1.6, -2.2), Area::Town),
-        (Vec3::new(6.9, 1.7, -3.0), Area::Cistern),
-    ] {
-        c.spawn((
-            AirCard,
-            Mesh3d(quad.clone()),
-            MeshMaterial3d(air(Vec4::new(
-                2.,
-                p.x,
-                1.,
-                if a == Area::Cistern { 1. } else { 0. },
-            ))),
-            Transform::from_translation(p).with_scale(Vec3::new(2., 2.2, 1.)),
-            NotShadowCaster,
-            ChildOf(roots.root(a)),
-        ));
-    }
-    for (p, size, kind) in [
-        (Vec3::new(-7.9, 1.55, 4.), Vec2::new(4., 3.1), 0.),
-        (Vec3::new(6.1, 1.6, -3.3), Vec2::new(3.4, 3.2), 1.),
-    ] {
-        c.spawn((
-            AirCard,
-            Mesh3d(quad.clone()),
-            MeshMaterial3d(air(Vec4::new(6., p.x, 1., kind))),
-            Transform::from_translation(p).with_scale(size.extend(1.)),
-            NotShadowCaster,
-            ChildOf(roots.town),
-        ));
-    }
+    let motes = Vec3::new(6.9, 1.7, -3.0);
+    c.spawn((
+        AirCard,
+        Mesh3d(quad.clone()),
+        MeshMaterial3d(air(Vec4::new(2., motes.x, 1., 1.))),
+        Transform::from_translation(motes).with_scale(Vec3::new(2., 2.2, 1.)),
+        NotShadowCaster,
+        ChildOf(roots.cistern),
+    ));
     for (p, size) in [
         (Vec3::new(-8.85, 0.31, -1.6), Vec2::new(3.3, 0.92)),
         (Vec3::new(5.6, 0.35, -5.8), Vec2::new(5.4, 1.18)),
@@ -647,6 +628,8 @@ fn face_air(
 fn meter(
     g: Res<Outing>,
     lens: Res<LensState>,
+    optics: Res<Optics>,
+    mut air: Single<&mut Visibility, With<MarketAir>>,
     mut ambient: ResMut<AmbientLight>,
     mut clear: ResMut<ClearColor>,
     probes: Res<SpringProbes>,
@@ -659,15 +642,23 @@ fn meter(
             &mut bevy::pbr::ClusterConfig,
             &mut EnvironmentMapLight,
             &mut bevy::render::view::ColorGrading,
+            &mut bevy::pbr::ShadowFilteringMethod,
         ),
         With<Camera3d>,
     >,
-    sun: Single<(&mut DirectionalLight, &mut CascadeShadowConfig), With<Sun>>,
+    sun: Single<
+        (
+            &mut DirectionalLight,
+            &mut CascadeShadowConfig,
+            &mut Transform,
+        ),
+        With<Sun>,
+    >,
     mut previous: Local<Option<(Area, i32)>>,
 ) {
     let town = g.area == Area::Town;
     let d = (lens.distance * 2.).round() as i32;
-    let (mut exp, mut fog, mut bloom, sky, mut clusters, mut environment, mut grade) =
+    let (mut exp, mut fog, mut bloom, sky, mut clusters, mut environment, mut grade, mut filter) =
         camera.into_inner();
     if let Some(mut s) = sky {
         let map = if town {
@@ -678,20 +669,50 @@ fn meter(
         if s.image != *map {
             s.image = map.clone();
         }
-        let b = if town { 5100. } else { 29. };
+        let b = if town {
+            SQUARE.sky.skybox_brightness
+        } else {
+            29.
+        };
         if s.brightness != b {
             s.brightness = b;
         }
     }
+    let switched = previous.is_none_or(|(a, _)| a != g.area);
+    if switched || optics.is_changed() {
+        let mut stock = if town {
+            SQUARE.film.bloom()
+        } else {
+            Bloom {
+                intensity: 0.14,
+                ..Bloom::NATURAL
+            }
+        };
+        if !optics.bloom {
+            stock.intensity = 0.;
+        }
+        *bloom = stock;
+        air.set_if_neq(if optics.air {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
+    }
     if *previous == Some((g.area, d)) {
         return;
     }
-    let switched = previous.is_none_or(|(a, _)| a != g.area);
     *previous = Some((g.area, d));
     let distance = d as f32 * 0.5;
-    let (mut sun, mut cascades) = sun.into_inner();
+    let (mut sun, mut cascades, mut angle) = sun.into_inner();
     // With the near-parallel overview the camera is far away. Allocate shadow map
     // resolution to occupied ground, not the empty hundreds of metres in front of it.
+    // The overhead shadow texel is already about the width of a material pixel.
+    // Preserve the finer nine-tap penumbra where the dolly lets the eye resolve it.
+    filter.set_if_neq(if town && distance > 60. {
+        bevy::pbr::ShadowFilteringMethod::Hardware2x2
+    } else {
+        bevy::pbr::ShadowFilteringMethod::Gaussian
+    });
     if distance > 60. {
         cascades.minimum_distance = distance - 23.;
         cascades.bounds.truncate(1);
@@ -713,8 +734,8 @@ fn meter(
         dynamic_resizing: true,
     };
     fog.falloff = FogFalloff::Linear {
-        start: (distance + if town { 7. } else { 5. }).max(12.),
-        end: distance + if town { 65. } else { 32. },
+        start: (distance + if town { 10. } else { 5. }).max(12.),
+        end: distance + if town { 96. } else { 32. },
     };
     if switched {
         *environment = if town {
@@ -722,29 +743,43 @@ fn meter(
         } else {
             probes.cistern.clone()
         };
-        grade.shadows.lift = if town { 0.003 } else { 0.001 };
-        grade.midtones.saturation = if town { 1.04 } else { 1.10 };
-        grade.global.post_saturation = 1.045;
-        sun.illuminance = if town { 37_500. } else { 475. };
+        *grade = if town {
+            SQUARE.film.grade()
+        } else {
+            let mut stock = bevy::render::view::ColorGrading::default();
+            stock.shadows.lift = 0.001;
+            stock.midtones.saturation = 1.10;
+            stock.global.post_saturation = 1.045;
+            stock
+        };
+        let (key, direction, fill, ambient_level, ev, haze) = if town {
+            sun.illuminance = SQUARE.sun.lux;
+            (
+                srgb(SQUARE.sun.srgb),
+                SQUARE.to_sun(),
+                srgb(SQUARE.sky.fill_srgb),
+                SQUARE.sky.fill_brightness,
+                SQUARE.film.ev100,
+                srgb(SQUARE.sky.haze_srgb),
+            )
+        } else {
+            sun.illuminance = 475.;
+            (
+                Color::srgb(0.61, 0.76, 0.98),
+                Vec3::new(-12., 20., 10.).normalize(),
+                Color::srgb(0.60, 0.78, 0.98),
+                230.,
+                8.70,
+                Color::srgb(0.054, 0.066, 0.12),
+            )
+        };
         sun.shadows_enabled = town;
-        sun.color = if town {
-            Color::srgb(1., 0.935, 0.805)
-        } else {
-            Color::srgb(0.61, 0.76, 0.98)
-        };
-        ambient.color = if town {
-            Color::srgb(0.72, 0.86, 0.99)
-        } else {
-            Color::srgb(0.60, 0.78, 0.98)
-        };
-        ambient.brightness = if town { 4100. } else { 230. };
-        exp.ev100 = if town { 11.62 } else { 8.70 };
-        bloom.intensity = if town { 0.07 } else { 0.14 };
-        fog.color = if town {
-            Color::srgb(0.56, 0.65, 0.73)
-        } else {
-            Color::srgb(0.054, 0.066, 0.12)
-        };
+        sun.color = key;
+        *angle = Transform::IDENTITY.looking_to(-direction, Vec3::Y);
+        ambient.color = fill;
+        ambient.brightness = ambient_level;
+        exp.ev100 = ev;
+        fog.color = haze;
         fog.directional_light_color = Color::NONE;
         clear.0 = fog.color;
     }

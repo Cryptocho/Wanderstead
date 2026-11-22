@@ -4,13 +4,13 @@
   "revision": "Bright handcrafted chunky fantasy town: cream limestone, caramel timber, airy blue slate, verdigris and select vermilion",
   "coordinates": "glTF Y-up; north -Z; metres; walkable paving top exactly 0; tile boundaries integer +/- .5",
   "grid": "assets/maps/town.grid, 21x15, (-10,-7) first cell; architecture only blocked/outside cells",
-  "atlas": "Sixteen 64px metre swatches of staggered limestone. The 64px slate, lime, stone and timber materials retain restrained relief; flower clusters are 32px and painted crown lobes are 80x74.",
+  "atlas": "Unique 2048px/32m limestone paintings, 64px/m. Typical bonds .234-.484m wide and .125-.234m high, occasional larger. Close honey/peach/grey tones follow broad mineral beds; cool repairs are restrained local clusters. Chiselled pixels, tiny corner losses, mottled mineral islands and worn centres. Meter divisions belong to actual score lines, not colour/noise grid overlays.",
   "textures": [
     {
       "material": "Lane_Paving",
       "source_tile": 0,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Slate",
@@ -218,7 +218,7 @@
     },
     {
       "material": "Lane_CrownFresh",
-      "source": "art/market/verge-leaves.png",
+      "source": "art/market/verge-leaves.png; calibrated spring-green/pink linear ramps",
       "pixels": [
         74,
         80
@@ -227,7 +227,7 @@
     },
     {
       "material": "Lane_CrownBlossom",
-      "source": "art/market/verge-blossoms.png",
+      "source": "art/market/verge-blossoms.png; calibrated spring-green/pink linear ramps",
       "pixels": [
         74,
         80
@@ -245,7 +245,8 @@
     }
   ],
   "roughness": "Real non-colour roughness maps; cloth/plaster .96, slate .72, copper .42, iron .47, gold .36, window .22",
-  "normal_map": "Subtle authored-pixel tangent relief, non-colour; glTF normalTexture. Metals carry actual metallic factors.",
+  "normal_map": "Non-colour tangent relief: paving 4x gradient, masonry 2.4x, other materials .75x; glTF normalTexture strength .35. Brighter worn centres subtly lower roughness. Metals carry actual metallic factors.",
+  "procedural_colour_encoding": "Paving, BackstreetSetts, Stone, Masonry, CanalMasonry, Plaster and WorkshopLime are authored in linear RGB then explicitly encoded to byte sRGB. Their normal/roughness maps remain non-colour data. Existing painting-based material encoding is retained.",
   "materials": [
     "Lane_Paving",
     "Lane_Slate",
@@ -267,6 +268,8 @@
     "Lane_Petals",
     "Lane_Mortar",
     "Lane_BackstreetSetts",
+    "Lane_Moss",
+    "Lane_LitterLeaf",
     "Lane_Iron",
     "Lane_Plum",
     "Lane_Unripe",
@@ -291,7 +294,7 @@
   ],
   "fruit_prefix": "ripe_plum_main_",
   "secondary_fruit_prefix": "ripe_plum_secondary_",
-  "shake_pivot": "canopy_main local pivot (5,0,-4); canopy_secondary (8,0,-2)",
+  "shake_pivot": "canopy_main branch attachment (5,1.55,-4); other crowns use equivalent branch attachments. Main trunk alone shakes; every crown has independent breeze. Awning stripe pivots sit at attached rear beam, linens and supports remain static.",
   "fountain": {
     "footprint": [
       [
@@ -800,17 +803,12 @@
       ]
     }
   ],
-  "interaction_clearance": "Breakfast table (-4,3) top .78; keeper (-5,3) and plum (-3,3) have open overhead. Inn gallery and cloth stop at z2.33, behind interaction row3. Walkable stair-landing tread tops remain y0; real descending flight starts beyond north play boundary z=-6.5. Main trees retain exact pivots.",
-  "previews": [
-    "overhead.png (north,56deg, game FOV)",
-    "overview.png (north gameplay detail)",
-    "eye_level.png (deep gate)",
-    "inn_detail.png (layered original storefront)"
-  ],
-  "comparison": "Viewed actual reference/visual/copper-square-game.webp and all four distinct supplied Elin references. Kept the north-facing street, exact map/props/anchors, and replaced dark leaf noise, repeated slab floor and continuous thin roofs with original quiet pixel motifs, luminous tree cluster shells and deliberate stepped carpentry.",
+  "interaction_clearance": "Breakfast table (-4,3) top .78; keeper (-5,3) and plum (-3,3) have open overhead. Inn gallery and cloth stop at z2.33, behind interaction row3. Walkable stair-landing tread tops remain y0; real descending flight starts beyond north play boundary z=-6.5. Tree world anchors retained; crown pivots at branch attachment.",
+  "previews": [],
+  "comparison": "Viewed the supplied warm Japanese-western plaza reference and actual reference/visual/copper-square-game.webp. Retained north-facing street and exact map/props/anchors; replaced repeating slabs and aggressive noise with unique muted warm stone painting and natural green crown ramps.",
   "art_refinement": "Stepped slate roofs and ridge blocks; open verdigris gutters, downspouts and timber corbels; layered gate cornices and archivolt steps; cream stair nosings and descending cheek blocks; clipped pixel flower borders. Canonical tree crown/fruit nodes and material batching preserved.",
   "foliage": {
-    "method": "Nine original painted lobes per tree, each two crossed upright cutouts and a horizontal cap; 27 quads per crown. Separate six-sided stems and geometric fruit. Alpha-mask .5, double-sided, real depth and shadows.",
+    "method": "Nine painted lobes per tree: two crossed upright cutouts plus cap. Main crown locally subdivided for actual sun aperture; other crowns remain 27 quads. Separate six-sided stems and fruit, alpha-mask .5, double-sided real shadows.",
     "materials": [
       "Lane_CrownFresh",
       "Lane_CrownBlossom",
@@ -821,8 +819,24 @@
       "canopy_secondary",
       "TownSprite_FlowerBorders"
     ],
-    "source": "art/market/spring-verge-source.png, tools/make_verge_sprites.py and tools/lane_pixels.py"
+    "source": "art/market/spring-verge-source.png, tools/make_verge_sprites.py and tools/lane_pixels.py; calibrated ramps in make_lane.py"
   },
-  "mesh_nodes": 77,
-  "triangles": 132648
+  "rebuild": "blender-4.5 -b --python-exit-code 1 --python tools/make_lane.py -- --export-only && blender-4.5 -b --python-exit-code 1 --python tools/bake_sky_shelter.py -- --town-only",
+  "canopy_aperture": {
+    "centre": [
+      6.05,
+      2.95,
+      -4.55
+    ],
+    "sun_axis": [
+      -0.757363498210907,
+      0.5591928958892822,
+      -0.33719995617866516
+    ],
+    "clear_radius_m": 0.13,
+    "method": "Conservative physical quad removal through every main crown layer; no fake transparency. Direction from assets/inks/market-morning.json."
+  },
+  "breeze": "Explicit canopy branch pivots and individually anchored awning bands; CPU transforms update the same meshes used for live shadows.",
+  "mesh_nodes": 152,
+  "triangles": 141320
 }

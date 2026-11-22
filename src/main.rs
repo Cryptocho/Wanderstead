@@ -1,5 +1,6 @@
 mod book;
 mod controls;
+mod daylight;
 mod delve;
 mod figures;
 mod game;
@@ -49,6 +50,7 @@ fn main() -> ExitCode {
     }
     app.insert_resource(outing)
         .insert_resource(journal)
+        .init_resource::<daylight::Optics>()
         .init_resource::<game::Interface>()
         .add_event::<game::Intent>()
         .insert_resource(WinitSettings::game())

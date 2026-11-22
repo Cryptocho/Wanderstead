@@ -52,6 +52,57 @@ const ACTION_TIME: f32 = 0.72;
 const THROW_DELAY: f32 = 0.25;
 const THROW_TIME: f32 = 0.66;
 
+// Explicit key-pose holds, in presentation seconds. NPC work never consumes a turn.
+// End times match art/figures/trade-atlas-layout.json.
+const KEEPER_CYCLE: &[(f32, usize)] = &[
+    (1.10, 0),
+    (1.36, 1),
+    (1.60, 2),
+    (1.84, 3),
+    (2.08, 2),
+    (2.32, 3),
+    (2.56, 2),
+    (2.80, 3),
+    (3.16, 4),
+    (4.61, 5),
+    (4.93, 6),
+    (6.28, 7),
+    (6.60, 6),
+];
+const APOTHECARY_CYCLE: &[(f32, usize)] = &[
+    (1.20, 0),
+    (1.48, 1),
+    (1.72, 2),
+    (2.06, 3),
+    (2.34, 1),
+    (2.58, 2),
+    (2.92, 3),
+    (3.34, 0),
+    (3.76, 4),
+    (4.08, 5),
+    (5.98, 6),
+    (6.30, 5),
+    (6.72, 7),
+    (7.37, 0),
+];
+const WORKER_FOOT: Vec3 = Vec3::new(7.55, 0.0, -5.85);
+const WORKER_CYCLE: &[(f32, usize)] = &[
+    (2.60, 0),
+    (3.20, 1),
+    (3.85, 2),
+    (5.00, 3),
+    (6.50, 4),
+    (7.00, 5),
+    (8.25, 6),
+    (11.25, 7),
+    (11.85, 6),
+];
+
+fn trade_frame(seconds: f32, cycle: &[(f32, usize)]) -> usize {
+    let phase = seconds % cycle[cycle.len() - 1].0;
+    cycle.iter().find(|&&(end, _)| phase < end).unwrap().1
+}
+
 impl Plugin for FiguresPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<FigureMaterial>::default())
@@ -90,6 +141,7 @@ enum ActorKind {
     Traveler,
     Keeper,
     Herbalist,
+    Worker,
     Jelly,
     Sentry,
     Moth,
@@ -175,10 +227,15 @@ struct FigureArt {
     moth: Sheet,
     keeper: Sheet,
     herbalist: Sheet,
+    worker: Sheet,
     jelly: Sheet,
     plum: Sheet,
     contact: Handle<Mesh>,
     contact_material: Handle<StandardMaterial>,
+    sole_contact: Handle<Mesh>,
+    sole_material: Handle<StandardMaterial>,
+    seated_material: Handle<StandardMaterial>,
+    sun_caster_rotation: Quat,
     spark: Handle<Mesh>,
     hit_material: Handle<StandardMaterial>,
     heal_material: Handle<StandardMaterial>,
@@ -340,7 +397,9 @@ fn spawn_figures(
             shelter.at(state.area),
         )
     };
+    let sun = crate::daylight::SQUARE.to_sun();
     let art = FigureArt {
+        sun_caster_rotation: Quat::from_rotation_y(sun.x.atan2(sun.z)),
         walk: make(
             "figures/traveler-walk.png",
             UVec2::splat(4),
@@ -384,9 +443,9 @@ fn spawn_figures(
             0.98,
         ),
         herbalist: make(
-            "market/herbalist.png",
-            UVec2::new(4, 1),
-            Vec2::new(96., 128.),
+            "figures/apothecary-supplies.png",
+            UVec2::new(4, 2),
+            human,
             108.,
             1.31,
         ),
@@ -396,6 +455,13 @@ fn spawn_figures(
             human,
             108.,
             1.30,
+        ),
+        worker: make(
+            "figures/seated-worker-cat.png",
+            UVec2::new(4, 2),
+            human,
+            108.,
+            1.08,
         ),
         jelly: make(
             "figures/jelly.png",
@@ -410,6 +476,29 @@ fn spawn_figures(
             base_color: Color::WHITE,
             base_color_texture: Some(server.load_with_settings(
                 "figures/contact-shadow.png",
+                |settings: &mut ImageLoaderSettings| settings.sampler = ImageSampler::linear(),
+            )),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            cull_mode: None,
+            ..default()
+        }),
+        sole_contact: meshes.add(Rectangle::new(1.0, 1.0)),
+        sole_material: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            base_color_texture: Some(server.load_with_settings(
+                "figures/sole-contact.png",
+                |settings: &mut ImageLoaderSettings| settings.sampler = ImageSampler::linear(),
+            )),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            cull_mode: None,
+            ..default()
+        }),
+        seated_material: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            base_color_texture: Some(server.load_with_settings(
+                "figures/seated-contact.png",
                 |settings: &mut ImageLoaderSettings| settings.sampler = ImageSampler::linear(),
             )),
             alpha_mode: AlphaMode::Blend,
@@ -441,6 +530,7 @@ fn spawn_figures(
         (ActorKind::Traveler, state.player, state.facing),
         (ActorKind::Keeper, KEEPER, IVec2::X),
         (ActorKind::Herbalist, crate::map::APOTHECARY, IVec2::NEG_X),
+        (ActorKind::Worker, IVec2::new(8, -6), IVec2::NEG_Y),
         (ActorKind::Jelly, state.jelly, state.jelly_facing),
     ] {
         spawn_actor(&mut commands, &art, kind, cell, facing, None, state.area);
@@ -484,6 +574,7 @@ fn spawn_actor(
         ActorKind::Traveler => &art.walk,
         ActorKind::Keeper => &art.keeper,
         ActorKind::Herbalist => &art.herbalist,
+        ActorKind::Worker => &art.worker,
         ActorKind::Jelly => &art.jelly,
         ActorKind::Sentry => &art.sentry,
         ActorKind::Moth => &art.moth,
@@ -493,7 +584,11 @@ fn spawn_actor(
     } else {
         0
     };
-    let foot = ground(cell);
+    let foot = if kind == ActorKind::Worker {
+        WORKER_FOOT
+    } else {
+        ground(cell)
+    };
     let visible = if kind == ActorKind::Traveler || (enemy.is_some() == (area == Area::Cistern)) {
         Visibility::Inherited
     } else {
@@ -518,24 +613,45 @@ fn spawn_actor(
     if kind == ActorKind::Traveler {
         commands.entity(card).insert(TravelPose(index as u32));
     }
-    // Keep the sun caster upright; only the visible artwork faces the camera.
+    // Upright town casters face the sun azimuth, retaining full silhouette breadth.
+    // Underground lamp proxies retain their original +Z-facing convention.
     let caster = commands
         .spawn((
             Mesh3d(body.frames[index].clone()),
             MeshMaterial3d(body.material.clone()),
             body.bounds,
-            Transform::default(),
+            Transform::from_rotation(if area == Area::Town {
+                art.sun_caster_rotation
+            } else {
+                Quat::IDENTITY
+            }),
             RenderLayers::layer(SHADOW_LAYER),
         ))
         .id();
     commands.entity(root).add_children(&[card, caster]);
+    let shoes = matches!(
+        kind,
+        ActorKind::Traveler | ActorKind::Keeper | ActorKind::Herbalist
+    );
+    let seated = kind == ActorKind::Worker;
+    let contact_size = actor_contact_size(kind);
     let shadow = commands
         .spawn((
-            Mesh3d(art.contact.clone()),
-            MeshMaterial3d(art.contact_material.clone()),
+            Mesh3d(if shoes || seated {
+                art.sole_contact.clone()
+            } else {
+                art.contact.clone()
+            }),
+            MeshMaterial3d(if seated {
+                art.seated_material.clone()
+            } else if shoes {
+                art.sole_material.clone()
+            } else {
+                art.contact_material.clone()
+            }),
             Transform::from_xyz(foot.x, 0.012, foot.z)
                 .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
-                .with_scale(Vec3::new(0.53, 0.30, 1.0)),
+                .with_scale(contact_size.extend(1.0)),
             visible,
             NotShadowCaster,
             NotShadowReceiver,
@@ -727,7 +843,10 @@ fn observe_turn(
         if let Ok(mut shadow) = bodies.get_mut(actor.shadow) {
             *shadow = visible;
         }
-        if matches!(actor.kind, ActorKind::Keeper | ActorKind::Herbalist) {
+        if matches!(
+            actor.kind,
+            ActorKind::Keeper | ActorKind::Herbalist | ActorKind::Worker
+        ) {
             continue;
         }
         let traveler = actor.kind == ActorKind::Traveler;
@@ -916,10 +1035,19 @@ fn walking(art: &FigureArt, dir: IVec2, step: usize) -> (&Sheet, usize) {
     (&art.diagonal, row * 4 + step)
 }
 
+fn actor_contact_size(kind: ActorKind) -> Vec2 {
+    match kind {
+        ActorKind::Worker => Vec2::new(1.30, 0.34),
+        ActorKind::Jelly => Vec2::new(0.55, 0.30),
+        _ => Vec2::new(0.53, 0.30),
+    }
+}
+
 fn animate_figures(
     mut commands: Commands,
     time: Res<Time>,
     art: Res<FigureArt>,
+    state: Res<Outing>,
     mut actors: Query<(Entity, &mut Actor, &mut Transform)>,
     mut cards: Query<
         (
@@ -997,17 +1125,12 @@ fn animate_figures(
                     walking(&art, actor.facing, 1)
                 }
             }
-            ActorKind::Herbalist => {
-                let at = (time.elapsed_secs() / 0.44) as usize % 8;
-                (&art.herbalist, [0, 0, 1, 2, 2, 3, 0, 0][at])
-            }
-            ActorKind::Keeper => {
-                // Real arm/utensil poses, not a bobbing static cutout. Work continues
-                // while the player considers a turn, without advancing game time.
-                let cycle = (time.elapsed_secs() / 0.19) as usize;
-                let row = (cycle / 24) % 2;
-                (&art.keeper, row * 4 + cycle % 4)
-            }
+            ActorKind::Herbalist => (
+                &art.herbalist,
+                trade_frame(time.elapsed_secs(), APOTHECARY_CYCLE),
+            ),
+            ActorKind::Keeper => (&art.keeper, trade_frame(time.elapsed_secs(), KEEPER_CYCLE)),
+            ActorKind::Worker => (&art.worker, trade_frame(time.elapsed_secs(), WORKER_CYCLE)),
             ActorKind::Jelly => {
                 let t = ((actor.age - 0.10) / 0.34).clamp(0.0, 1.0);
                 let smooth = t * t * (3.0 - 2.0 * t);
@@ -1074,6 +1197,13 @@ fn animate_figures(
                     material.0 = sheet.material.clone();
                 }
                 transform.scale.x = if mirror { -1.0 } else { 1.0 };
+                if entity == actor.caster {
+                    transform.rotation = if state.area == Area::Town {
+                        art.sun_caster_rotation
+                    } else {
+                        Quat::IDENTITY
+                    };
+                }
                 transform.translation.y = if actor.kind == ActorKind::Moth && !actor.dying {
                     0.26
                 } else {
@@ -1093,14 +1223,10 @@ fn animate_figures(
         if let Ok(mut shadow) = shadows.get_mut(actor.shadow) {
             shadow.translation = Vec3::new(root.translation.x, 0.012, root.translation.z);
             let airborne = (root.translation.y / 0.24).clamp(0.0, 1.0);
-            let width = if actor.kind == ActorKind::Jelly {
-                0.55
-            } else {
-                0.53
-            };
+            let size = actor_contact_size(actor.kind);
             shadow.scale = Vec3::new(
-                width * (1.0 - 0.25 * airborne),
-                0.30 * (1.0 - 0.25 * airborne),
+                size.x * (1.0 - 0.25 * airborne),
+                size.y * (1.0 - 0.25 * airborne),
                 1.0,
             );
         }

@@ -1,5 +1,6 @@
 //! Frame pacing, engine screenshots, and opt-in local desktop playtesting.
 use crate::{
+    daylight::Optics,
     game::{Interface, Outing},
     lens::LensState,
     stage::PaletteState,
@@ -265,7 +266,7 @@ fn wire(
     game: Res<Outing>,
     ui: Res<Interface>,
     lens: Res<LensState>,
-    palette: Res<PaletteState>,
+    look: (Res<PaletteState>, ResMut<Optics>),
     sight: (ResMut<crate::sight::SightWindow>, Res<Assets<Image>>),
     camera: Single<(&Camera, &GlobalTransform), With<Camera3d>>,
     hover: Res<HoverTile>,
@@ -277,6 +278,7 @@ fn wire(
     mut quit: EventWriter<AppExit>,
 ) {
     let (entity, mut win, raw) = window.into_inner();
+    let (palette, mut optics) = look;
     let mut buf = [0_u8; 256];
     // A reply followed immediately by another input must not merge the two turns.
     let (n, peer) = match wire.sock.recv_from(&mut buf) {
@@ -303,6 +305,26 @@ fn wire(
                 "beat":e.beat,"attempts":e.attempts,"kills":e.kills,"deaths":e.deaths,"retreats":e.retreats,"coins":e.loot,"banked":e.banked,"ready":e.skill_ready,
                 "chest":e.seal_open,"remedy":e.tonic_open,"enemies":e.enemies.iter().map(|a|json!([a.id,format!("{:?}",a.kind),a.pos.to_array(),a.hp,a.warn.map(|p|p.to_array())])).collect::<Vec<_>>(),
                 "hover":hover.cell.map(|p|p.to_array()),"path":hover.path.iter().map(|p|p.to_array()).collect::<Vec<_>>()})
+        }
+        Some("optics") => {
+            match (words.next(), words.next()) {
+                (None, None) => {}
+                (Some(layer @ ("air" | "bloom" | "dof")), Some(value @ ("on" | "off"))) => {
+                    let enabled = value == "on";
+                    match layer {
+                        "air" => optics.air = enabled,
+                        "bloom" => optics.bloom = enabled,
+                        _ => optics.dof = enabled,
+                    }
+                }
+                _ => {
+                    let _ = wire
+                        .sock
+                        .send_to(br#"{"error":"optics [air|bloom|dof on|off]"}"#, peer);
+                    return;
+                }
+            }
+            json!({"air":optics.air,"bloom":optics.bloom,"dof":optics.dof})
         }
         Some("sight") => {
             let mut window = sight.0;
@@ -460,7 +482,7 @@ fn wire(
             json!(true)
         }
         _ => {
-            json!({"error":"state/expedition/project/key/scroll/pointer/mouse/measure/stats/capture/exit"})
+            json!({"error":"state/expedition/project/key/scroll/pointer/mouse/optics/measure/stats/capture/exit"})
         }
     };
     let _ = wire.sock.send_to(reply.to_string().as_bytes(), peer);

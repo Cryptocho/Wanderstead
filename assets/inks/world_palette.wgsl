@@ -10,16 +10,20 @@
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
 }
-#import "inks/sky_shelter.wgsl"::visible_sky
+#import "inks/sky_shelter.wgsl"::{site_light,street_radiance}
 #import "inks/sight_cutaway.wgsl"::hides_traveler
 
 struct PaletteUniform {
     // enabled, world texels/metre, illumination levels/stop, ordered dither amplitude
     settings: vec4<f32>,
     floor_style: vec4<f32>,
+    sunward: vec4<f32>,
+    single_tap: u32,
 }
 @group(2) @binding(100) var<uniform> palette: PaletteUniform;
 @group(2) @binding(101) var site_edges:texture_2d<f32>;
+@group(2) @binding(107) var ground_contact:texture_2d<f32>;
+@group(2) @binding(108) var ground_contact_sampler:sampler;
 
 fn edge_distance(bits:u32, f:vec2<f32>)->f32 {
     var d=2.;
@@ -78,34 +82,56 @@ fn fragment(vertex: VertexOutput, @builtin(front_facing) is_front: bool) -> Frag
 #endif
     var pbr = pbr_input_from_standard_material(ink_vertex, is_front);
     pbr.material.base_color = alpha_discard(pbr.material, pbr.material.base_color);
-    let sky=visible_sky(vertex.world_position.xyz,normalize(pbr.world_normal));
-    pbr.diffuse_occlusion*=sky;pbr.specular_occlusion*=sqrt(sky);
+    let site=site_light(vertex.world_position.xyz,normalize(pbr.world_normal));
+    pbr.diffuse_occlusion*=site.r;pbr.specular_occlusion*=sqrt(site.r);
+    // Actual short-range geometry contact, shared by paving, lawn and the
+    // bottom of plaster walls. Open ground stays white; metre joints add no AO.
+    if palette.floor_style.w>.5 && vertex.world_position.y>-.08 && vertex.world_position.y<.35 {
+        let contact_uv=(vertex.world_position.xz+vec2<f32>(16.))/32.;
+        if all(contact_uv>=vec2<f32>(0.)) && all(contact_uv<=vec2<f32>(1.)) {
+            let contact=textureSampleLevel(ground_contact,ground_contact_sampler,contact_uv,0.).r;
+            let weight=1.-smoothstep(.06,.35,vertex.world_position.y);
+            pbr.diffuse_occlusion*=mix(1.,contact,weight);
+            pbr.specular_occlusion*=mix(1.,sqrt(contact),weight);
+            pbr.material.base_color=vec4<f32>(pbr.material.base_color.rgb*mix(1.,.88+.12*contact,weight),pbr.material.base_color.a);
+        }
+    }
 #ifdef VERTEX_UVS_A
     if enabled && !drawn_mask && abs(det) > 0.00000001 &&
         (pbr_bindings::material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_BASE_COLOR_TEXTURE_BIT) != 0u {
         let projected = max(length(sx), length(sy)) / pitch;
         if projected < 1.1 {
-            // Average the two opposing quadrants of a virtual material texel.
-            let du = (ux*sy.y - uy*sx.y) * (pitch/det);
-            let dv = (uy*sx.x - ux*sy.x) * (pitch/det);
-            let shift = vec2<f32>(0.5) - fract(chart/pitch);
-            let middle = vertex.uv + du*shift.x + dv*shift.y;
-            let a = .26*(du+dv);
-            let filtered = .5*(
-                textureSampleLevel(pbr_bindings::base_color_texture,pbr_bindings::base_color_sampler,middle+a,0.).rgb+
-                textureSampleLevel(pbr_bindings::base_color_texture,pbr_bindings::base_color_sampler,middle-a,0.).rgb);
-            var factor=pbr_bindings::material.base_color.rgb;
-#ifdef VERTEX_COLORS
-            factor *= vertex.color.rgb;
-#endif
             let coverage=.86*(1.-smoothstep(.60,1.1,projected));
-            pbr.material.base_color = vec4<f32>(mix(pbr.material.base_color.rgb,filtered*factor,coverage),pbr.material.base_color.a);
+            // Town albedos already took one bilinear footprint at the snapped
+            // pixel centre in pbr_input_from_standard_material. Nearest-source
+            // art from other sites still needs the two-quadrant reconstruction.
+            if palette.single_tap==0u {
+                let du=(ux*sy.y-uy*sx.y)*(pitch/det);
+                let dv=(uy*sx.x-ux*sy.x)*(pitch/det);
+                let shift=vec2<f32>(.5)-fract(chart/pitch);
+                let middle=vertex.uv+du*shift.x+dv*shift.y;
+                let a=.26*(du+dv);
+                let filtered=.5*(
+                    textureSampleLevel(pbr_bindings::base_color_texture,pbr_bindings::base_color_sampler,middle+a,0.).rgb+
+                    textureSampleLevel(pbr_bindings::base_color_texture,pbr_bindings::base_color_sampler,middle-a,0.).rgb);
+                var factor=pbr_bindings::material.base_color.rgb;
+#ifdef VERTEX_COLORS
+                factor*=vertex.color.rgb;
+#endif
+                pbr.material.base_color=vec4<f32>(mix(pbr.material.base_color.rgb,filtered*factor,coverage),pbr.material.base_color.a);
+            }
             pbr.N = normalize(mix(pbr.N,normalize(pbr.world_normal), .34*coverage));
         }
     }
 #endif
+    if palette.floor_style.x>.5 && palette.floor_style.x<1.5 && geometric.y>.76 && abs(vertex.world_position.y)<.02 {
+        let f=fract(vertex.world_position.xz+vec2<f32>(.5));
+        let boundary=min(min(f.x,1.-f.x),min(f.y,1.-f.y));
+        let seam=1.-smoothstep(.003,.014,boundary);
+        pbr.material.base_color=vec4<f32>(pbr.material.base_color.rgb*(1.-.055*seam),pbr.material.base_color.a);
+    }
     var reflected_water=0.;
-    if enabled && palette.floor_style.x>.5 && geometric.y>.76 && abs(vertex.world_position.y)<.16 {
+    if enabled && palette.floor_style.x>1.5 && geometric.y>.76 && abs(vertex.world_position.y)<.16 {
         let s=(floor(vertex.world_position.xz/pitch)+.5)*pitch;
         let tile=vec2<i32>(floor(s+.5));
         let f=fract(s+.5);
@@ -146,20 +172,36 @@ fn fragment(vertex: VertexOutput, @builtin(front_facing) is_front: bool) -> Frag
             let delta = centre - pbr.world_position.xyz;
             pbr.world_position = vec4<f32>(pbr.world_position.xyz + delta - normal * dot(delta, normal), 1.0);
         }
-        out.color = apply_pbr_lighting(pbr)+vec4<f32>(reflected_water*vec3<f32>(.31,.72,.74),0.);
+        let diffuse=pbr.material.base_color.rgb*(1.-pbr.material.metallic);
+        let spill=street_radiance(site,pbr.N.y,diffuse);
+        out.color=apply_pbr_lighting(pbr)+vec4<f32>(spill+reflected_water*vec3<f32>(.31,.72,.74),0.);
+        // Only authored leaf/petal highlight swatches may gain HDR sun tips.
+        // Stone is never emissive. The lit-value gate keeps shaded crowns quiet.
+        if palette.floor_style.z>.5 {
+            let weights=vec3<f32>(.2126,.7152,.0722);
+            let paint=dot(pbr.material.base_color.rgb,weights);
+            let facing=smoothstep(.20,.68,dot(normalize(pbr.world_normal),palette.sunward.xyz));
+            let sunlit=smoothstep(.42,.90,dot(out.color.rgb,weights));
+            let selected=step(.83,stone_grain(floor(vertex.world_position.xz*5.7)));
+            let tip=smoothstep(select(.40,.62,palette.floor_style.z>1.5),select(.53,.78,palette.floor_style.z>1.5),paint);
+            let gleam=selected*tip*facing*sunlit*.78;
+            let warm_tip=palette.sunward.w*select(vec3<f32>(1.58,1.43,1.06),vec3<f32>(1.63,1.27,1.20),palette.floor_style.z>1.5);
+            out.color=vec4<f32>(mix(out.color.rgb,max(out.color.rgb,warm_tip),gleam),out.color.a);
+        }
         if enabled {
             let weights = vec3<f32>(0.2126, 0.7152, 0.0722);
             let luminance = max(dot(out.color.rgb, weights), 0.00001);
             let albedo = max(dot(pbr.material.base_color.rgb, weights), 0.02);
             let cell = vec2<i32>(floor(chart / pitch));
-            let threshold = ordered_threshold(cell) * palette.settings.w;
+            let town_flags=palette.floor_style.x==1.;
+            let threshold=ordered_threshold(cell)*palette.settings.w*select(1.,.34,town_flags);
             let steps = max(palette.settings.z, 1.0);
             // Log illumination bands preserve HDR range at any physical exposure.
             // Soft blending retains contact penumbrae. Metallic highlights are mostly
             // continuous; the surface's roughness and Fresnel remain Bevy's real PBR.
             let illumination = log2(luminance / albedo);
             let band = floor(illumination * steps + 0.5 + threshold) / steps;
-            let amount = 0.84 * (1.0 - 0.82 * pbr.material.metallic);
+            let amount=select(.84,.46,town_flags)*(1.-.82*pbr.material.metallic);
             let band_luminance = albedo * exp2(mix(illumination, band, amount));
             // Cool only the ink in the darkest recesses; keep colored lamps,
             // metal glints, and the real albedo instead of tinting the whole frame.

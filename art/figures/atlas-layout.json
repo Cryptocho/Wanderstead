@@ -4,6 +4,7 @@
   "alpha": "binary",
   "padding_below_feet": 2,
   "anatomy": "original short 2.5-3-head figures; uniform scale only",
+  "trade_cycles": "trade-atlas-layout.json",
   "traveler-walk": {
     "tile": [
       160,
@@ -81,25 +82,6 @@
       "brace",
       "hurt/down",
       "drink"
-    ],
-    "foot": [
-      80,
-      126
-    ],
-    "body_pixels": 108
-  },
-  "keeper-work": {
-    "tile": [
-      160,
-      128
-    ],
-    "grid": [
-      4,
-      2
-    ],
-    "rows": [
-      "stir",
-      "knead"
     ],
     "foot": [
       80,

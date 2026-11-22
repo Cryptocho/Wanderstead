@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Copper Kettle: authored 3D market streets, Blender 4.5, north is game -Z.
-Run blender-4.5 --background --python tools/make_lane.py.
+Run blender-4.5 --background --python-exit-code 1 --python tools/make_lane.py -- --export-only.
 Original authored pixel surfaces + original meshes; no third-party art.
 The grid is geometry's authority. All walkable surfaces have top height zero.
 """
@@ -17,6 +17,9 @@ ROOT=Path(__file__).resolve().parents[1]
 ART=ROOT/'art/lane'; OUT=ROOT/'assets/lanes'
 ART.mkdir(parents=True,exist_ok=True); OUT.mkdir(parents=True,exist_ok=True)
 R=random.Random(19117)
+DAYLIGHT=json.loads((ROOT/'assets/inks/market-morning.json').read_text())
+bear=math.radians(DAYLIGHT['sun']['bearing_deg']);elev=math.radians(DAYLIGHT['sun']['elevation_deg'])
+SUNWARD=Vector((math.sin(bear)*math.cos(elev),math.sin(elev),-math.cos(bear)*math.cos(elev)))
 bpy.context.preferences.filepaths.save_version=0
 bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete(use_global=False)
 for material in list(bpy.data.materials): bpy.data.materials.remove(material)
@@ -32,10 +35,15 @@ mw,mh=master.size[:]
 # Store the authored swatches in their natural four-by-four layout, in linear
 # colour. Four samples per axis give one reference value per 64px brush texel.
 studies=np.asarray(master.pixels[:],dtype=np.float32).reshape(mh,mw,4).reshape(4,64,4,4,64,4,4).mean(axis=(2,5))
-def image(name,data,linear=False):
+def image(name,data,linear=False,encode_srgb=False):
  h,w=data.shape[:2]; im=bpy.data.images.new(name,width=w,height=h,alpha=True)
  if linear: im.colorspace_settings.name='Non-Color'
- im.pixels.foreach_set(np.ascontiguousarray(data,dtype=np.float32).ravel())
+ storage=data
+ if encode_srgb:
+  # Palette tools author linear radiance; byte colour images store sRGB.
+  storage=data.copy();rgb=storage[:,:,:3]
+  storage[:,:,:3]=np.where(rgb<=.0031308,rgb*12.92,1.055*np.maximum(rgb,0)**(1/2.4)-.055)
+ im.pixels.foreach_set(np.ascontiguousarray(storage,dtype=np.float32).ravel())
  im.filepath_raw=str(ART/(name+'.png'));im.file_format='PNG';im.save()
  return im
 def material(name,tile=None,colour=None,rough=.86,metal=0,emission=0,alpha=False,patch=None):
@@ -54,16 +62,20 @@ def material(name,tile=None,colour=None,rough=.86,metal=0,emission=0,alpha=False
    data[:,:,:3]=np.round(data[:,:,:3]*20)/20
   else:
    data=surface(name)
-   if name in ('Paving','Slate','WeatheredSlate','CopperRoof','Wood','Plaster','WorkshopLime','Masonry','CanalMasonry','Stone'):
+   if name in ('Slate','WeatheredSlate','CopperRoof','Wood'):
     study_tile=1 if name in ('Slate','WeatheredSlate','CopperRoof') else tile
     row,col=divmod(study_tile,4)
     data=worked_material(name,data,studies[3-row,:,col,:,:])
   if alpha and name not in ('Leaves','Petals'):
    h,w=data.shape[:2];yy,xx=np.mgrid[0:h,0:w];u=(xx-w/2)/(w/2);v=(yy-h/2)/(h/2)
    data[:,:,3]=((abs(u)*.78+abs(v)<.94)&((u*u+v*v)<.86)).astype(np.float32)
-  im=image('town_'+name.lower(),data);tx=nodes.new('ShaderNodeTexImage');tx.image=im
-  tx.interpolation='Closest';links.new(tx.outputs['Color'],p.inputs['Base Color'])
-  norm,rd=maps(data,rough)
+  procedural_colour=name in ('Paving','BackstreetSetts','Stone','Masonry','CanalMasonry','Plaster','WorkshopLime')
+  im=image('town_'+name.lower(),data,encode_srgb=procedural_colour);tx=nodes.new('ShaderNodeTexImage');tx.image=im
+  # The world shader snaps to a material pixel before this hardware footprint.
+  # Cutouts retain their exact painted alpha edge, independent of the ground.
+  tx.interpolation='Closest' if alpha else 'Linear';links.new(tx.outputs['Color'],p.inputs['Base Color'])
+  relief=4.0 if name in ('Paving','BackstreetSetts') else 2.4 if name in ('Stone','Masonry','CanalMasonry') else .75
+  norm,rd=maps(data,rough,relief)
   nt=nodes.new('ShaderNodeTexImage');nt.image=image('town_'+name.lower()+'_normal',norm,True)
   nt.interpolation='Closest';nm=nodes.new('ShaderNodeNormalMap');nm.inputs['Strength'].default_value=.35
   links.new(nt.outputs['Color'],nm.inputs['Color']);links.new(nm.outputs['Normal'],p.inputs['Normal'])
@@ -73,8 +85,14 @@ def material(name,tile=None,colour=None,rough=.86,metal=0,emission=0,alpha=False
    links.new(tx.outputs['Alpha'],p.inputs['Alpha']);m.surface_render_method='DITHERED'
    m.use_backface_culling=False
   if emission:
-   links.new(tx.outputs['Color'],p.inputs['Emission Color']);p.inputs['Emission Strength'].default_value=emission
-  SOURCE.append({'material':m.name,'source_tile':tile,'source_patch':patch,'pixels_per_metre':int(data.shape[1])})
+   glow=data.copy()
+   if name=='Glass':
+    yy,xx=np.mgrid[0:glow.shape[0],0:glow.shape[1]]
+    core=((xx>20)&(xx<25)&(yy>18)&(yy<43))|((xx>39)&(xx<43)&(yy>27)&(yy<46))
+    glow[:,:,:3]*=core[:,:,None]
+   et=nodes.new('ShaderNodeTexImage');et.image=image('town_'+name.lower()+'_glow',glow)
+   et.interpolation='Closest';links.new(et.outputs['Color'],p.inputs['Emission Color']);p.inputs['Emission Strength'].default_value=emission
+  SOURCE.append({'material':m.name,'source_tile':tile,'source_patch':patch,'pixels_per_metre':int(data.shape[1])//(32 if name in ('Paving','BackstreetSetts') else 1)})
  else:
   p.inputs['Base Color'].default_value=(*colour,1)
   if emission:p.inputs['Emission Color'].default_value=(*colour,1);p.inputs['Emission Strength'].default_value=emission
@@ -88,8 +106,10 @@ for args in [
  name,tile,rough,metal=args;material(name,tile,rough=rough,metal=metal,emission=.75 if name=='Glass' else 0)
 material('Leaves',9,rough=.89,alpha=True)
 material('Petals',15,rough=.9,alpha=True)
-material('Mortar',colour=tuple(linear('87958d')))
+material('Mortar',colour=tuple(linear('938780')))
 material('BackstreetSetts',0,rough=.91)
+material('Moss',colour=tuple(linear('61734c')),rough=.99)
+material('LitterLeaf',colour=tuple(linear('8b845c')),rough=.98)
 material('Iron',colour=tuple(linear('55777a')),rough=.47,metal=.78)
 material('Plum',colour=tuple(linear('995187')),rough=.34)
 material('Unripe',colour=tuple(linear('a0ba63')),rough=.48)
@@ -125,8 +145,15 @@ def sprite_material(name,data,rough=.83,source='tools/lane_pixels.py'):
  return m
 for name,path in [('CrownFresh','verge-leaves.png'),('CrownBlossom','verge-blossoms.png')]:
  original=bpy.data.images.load(str(ROOT/'art/market'/path),check_existing=False)
- w,h=original.size[:]
- sprite_material(name,np.asarray(original.pixels[:],dtype=np.float32).reshape(h,w,4),source='art/market/'+path)
+ w,h=original.size[:];data=np.asarray(original.pixels[:],dtype=np.float32).reshape(h,w,4)
+ lum=data[:,:,:3]@np.array((.2126,.7152,.0722),dtype=np.float32);opaque=data[:,:,3]>.5
+ lo,hi=np.percentile(lum[opaque],[4,98])
+ tone=np.clip((lum-lo)/max(hi-lo,.01),0,1)
+ if name=='CrownFresh':
+  ramp=np.array([linear(c) for c in ['355c37','4c733c','698b49','8ba45d','b6c487']])
+ else:ramp=np.array([linear(c) for c in ['a15e78','c47c94','e3a3b5','f1c8cb','f7e4d6']])
+ data[:,:,:3]=ramp[np.minimum(4,(tone*4.8).astype(int))]
+ sprite_material(name,data,source='art/market/'+path+'; calibrated spring-green/pink linear ramps')
 sprite_material('FlowerCluster',flower())
 
 class Mesh:
@@ -135,9 +162,16 @@ class Mesh:
  def face(self,pts,uv=None):
   k=len(self.v);self.v.extend(cv(Vector(p)-self.origin) for p in pts);self.f.append(tuple(range(k,k+len(pts))))
   if uv is None:
-   a,b=Vector(pts[0]),Vector(pts[1]);w=(b-a).length
-   h=(Vector(pts[-1])-a).length
-   uv=[(0,0),(w,0),(w,h),(0,h)] if len(pts)==4 else [(0,0),(w,0),(w*.5,h)]
+   if self.mat in ('Stone','Masonry','CanalMasonry','Plaster','WorkshopLime'):
+    # Courses carry around an actual pier, including cut ends of small stones.
+    # Starting the texture at (0,0) on every face repeats one pale corner.
+    norm=(Vector(pts[1])-Vector(pts[0])).cross(Vector(pts[-1])-Vector(pts[0]))
+    axis=max(range(3),key=lambda i:abs(norm[i]));u,v=((2,1),(0,2),(0,1))[axis]
+    uv=[(p[u],p[v]) for p in pts]
+   else:
+    a,b=Vector(pts[0]),Vector(pts[1]);w=(b-a).length
+    h=(Vector(pts[-1])-a).length
+    uv=[(0,0),(w,0),(w,h),(0,h)] if len(pts)==4 else [(0,0),(w,0),(w*.5,h)]
   self.uv.append(uv)
  def box(self,c,s):
   x,y,z=c;a,b,d=[v*.5 for v in s]
@@ -180,6 +214,20 @@ def cluster_card(mesh,c,w,h,yaw=0,tilt=0):
  # Crossed walls and horizontal caps cover north-facing high/eye views.
  c=Vector(c);u=Vector((math.cos(yaw),0,math.sin(yaw)))*w*.5
  v=Vector((-math.sin(yaw)*math.sin(tilt),math.cos(tilt),math.cos(yaw)*math.sin(tilt)))*h*.5
+ if mesh.name.startswith('canopy_main'):
+  # An actual sun-axis opening, also used by the runtime shaft authoring.
+  axis=SUNWARD;opening=Vector((6.05,2.95,-4.55))
+  delta=c-opening;near=(delta-axis*delta.dot(axis)).length
+  if near<w+h:
+   steps=12
+   radius=.13+(u.length+v.length)/steps
+   for j in range(steps):
+    for i in range(steps):
+     a=i/steps;b=(i+1)/steps;d=j/steps;e=(j+1)/steps
+     middle=c+u*(a+b-1)+v*(d+e-1);q=middle-opening
+     if (q-axis*q.dot(axis)).length<radius:continue
+     mesh.face([c+u*(2*a-1)+v*(2*d-1),c+u*(2*b-1)+v*(2*d-1),c+u*(2*b-1)+v*(2*e-1),c+u*(2*a-1)+v*(2*e-1)],[(a,d),(b,d),(b,e),(a,e)])
+   return
  mesh.face([c-u-v,c+u-v,c+u+v,c-u+v],[(0,0),(1,0),(1,1),(0,1)])
 
 # Level cobbled carpet, precise cell joints. Even the apron is town, not meadow.
@@ -192,24 +240,11 @@ for z in range(-24,17):
   if x in [-1,0,1] and -10<=z<=-5:continue
   ch=glyph(x,z)
   dst=earth if ch=='g' else apron if ch=='#' else ground
-  if dst==ground:
-   swatch=((x*73856093)^(z*19349663))%16
-   row,col=divmod(swatch,4)
-   def uv(u,v):return ((col+(u*.992+.004))*.25,(row+(v*.992+.004))*.25)
-   coords=[uv(0,1),uv(0,0),uv(1,0),uv(1,1)]
+  if dst in (ground,apron):
+   coords=[((px+16)/32,(16-pz)/32) for px,pz in [(x-.5,z-.5),(x-.5,z+.5),(x+.5,z+.5),(x+.5,z-.5)]]
   else:coords=[(x-.5,z-.5),(x-.5,z+.5),(x+.5,z+.5),(x+.5,z-.5)]
   dst.face([(x-.5,0,z-.5),(x-.5,0,z+.5),(x+.5,0,z+.5),(x+.5,0,z-.5)],coords)
 ground.finish();apron.finish();earth.finish();mortar.finish()
-# Older masons built the centre walk in a staggered bond. Scored joints
-# interrupt some individual flags without ever hiding a whole-cell boundary.
-score=Mesh('Repairs_In_The_Processional_Way','Mortar')
-for z in range(-4,5):
- for x in range(-3,3):
-  if glyph(x,z)=='#' or (3*x+5*z)%7 not in (0,1,3):continue
-  off=((x+2*z)%3-1)*.16
-  if (x+z)%2:score.box((x+off,.001,z),(.012,.003,.97))
-  else:score.box((x,.001,z+off),(.97,.003,.012))
-score.finish()
 # Readable cut-stone crossing and canal-edge course, flush with walking height.
 trim=Mesh('Crossing_FlushCutStone','Stone')
 for z in range(-6,6):
@@ -264,9 +299,10 @@ def stall(x,z,w=2.4,sidegoods=True):
  wood.box((x,2.04,z),(w+.16,.08,1.12))
  for j in range(10):
   a=x-w*.5+j*w/10;b=a+w/10
-  cloth=red if j%2==0 else linen
+  cloth=Mesh('awning_stall_%s_%s_%02d'%(x,z,j),'Crimson' if j%2==0 else 'Linen',origin=((a+b)*.5,2.25,z-.55))
   cloth.face([(a,1.93,z+.57),(b,1.93,z+.57),(b,2.25,z-.55),(a,2.25,z-.55)])
   cloth.face([(a,1.79,z+.60),(b,1.76,z+.60),(b,1.93,z+.57),(a,1.93,z+.57)])
+  cloth.finish()
  for dx in [-w*.31,0,w*.31]:
   wood.box((x+dx,.85,z),(w*.27,.08,.67))
   for j in range(12):
@@ -414,9 +450,11 @@ for yy in [1.45,1.92]:gallery.box((-7.05,yy,2.18),(2.70,.055,.055))
 for j in range(15):gallery.box((-8.29+j*.177,1.68,2.18),(.028,.43,.028))
 gallery.finish()
 for j in range(14):
- a=-8.43+j*.197;b=a+.197;cloth=red if j%2==0 else linen
+ a=-8.43+j*.197;b=a+.197
+ cloth=Mesh('awning_inn_%02d'%j,'Crimson' if j%2==0 else 'Linen',origin=((a+b)*.5,2.92,1.57))
  cloth.face([(a,2.54,2.31),(b,2.54,2.31),(b,2.92,1.57),(a,2.92,1.57)])
  cloth.face([(a,2.39,2.33),(b,2.38,2.33),(b,2.54,2.31),(a,2.54,2.31)])
+ cloth.finish()
 for xx in [-7.78,-6.32]:
  dormer=Mesh('Inn_DormerJoinery','Wood');dr=Mesh('Inn_DormerSlate','Slate')
  dormer.box((xx,3.72,1.31),(.64,.61,.54))
@@ -647,7 +685,7 @@ gold.finish()
 
 def tree(x,z,s,tag,blossom=False,fruit=False):
  tr=Mesh('trunk_'+tag,'Wood',origin=(x,0,z))
- canopy=Mesh('canopy_'+tag,'CrownBlossom' if blossom else 'CrownFresh',origin=(x,0,z))
+ canopy=Mesh('canopy_'+tag,'CrownBlossom' if blossom else 'CrownFresh',origin=(x,1.55*s,z))
  def p(dx,y,dz):return (x+dx*s,y*s,z+dz*s)
  tr.beam(p(0,0,0),p(.12,2.35,0),.21*s,.095*s,n=6)
  # Nine deliberately composed lobes, with separate branches. All foliage lives
@@ -662,22 +700,23 @@ def tree(x,z,s,tag,blossom=False,fruit=False):
   cluster_card(canopy,p(dx,y+.13,dz),w*1.22*s,w*1.02*s,yaw=0,tilt=.12)
   cluster_card(canopy,p(dx,y+.13,dz),w*1.22*s,w*1.02*s,yaw=math.pi/2,tilt=-.12)
   cluster_card(canopy,p(dx,y+.38,dz),w*1.17*s,w*1.17*s,tilt=-math.pi/2)
- tr.finish();canopy.finish()
+ tr.finish();crown_object=canopy.finish()
  # Preserve the historical random stream and therefore every authored fruit
  # centre, despite replacing the old eight 75-leaf noise clouds.
  for _ in range(8*(1+75*6)):R.random()
  if fruit:
   for k in range(9):
    a=k*2.4;c=p(math.cos(a)*.86,2.10+R.uniform(-.1,.18),math.sin(a)*.82)
-   fr=Mesh('ripe_plum_'+tag+'_%02d'%k,'Unripe' if tag=='secondary' else 'Plum')
-   lathe(fr,c,[(-.09,.025),(-.055,.08),(0,.10),(.07,.07),(.095,.02)],n=12);fr.finish()
+   fr=Mesh('ripe_plum_'+tag+'_%02d'%k,'Unripe' if tag=='secondary' else 'Plum',origin=canopy.origin)
+   lathe(fr,c,[(-.09,.025),(-.055,.08),(0,.10),(.07,.07),(.095,.02)],n=12)
+   obj=fr.finish();obj.parent=crown_object;obj.location=(0,0,0)
 tree(5,-4,1,'main',fruit=True);tree(8,-2,.85,'secondary',fruit=True)
 tree(7.75,5.1,.93,'fountain_garden')
 for i,(x,z,s,bloom) in enumerate([(-10.5,5.5,1.4,True),(10,7.5,1.3,True),(-12,-9,1.5,False),(13,-5,1.3,False),(-15,10,1.8,True),(15,11,1.6,True),(-15,-17,2,False),(14,-19,2,False)]):
  tree(x,z,s,'scenery_%02d'%i,blossom=bloom)
 # Flat leaves and seeds have a continuous distribution around their source
 # trees. Keep the central walking lane clear except for a few blown strays.
-scatter=random.Random(7127); fallen=Mesh('Orchard_Leaf_Litter','Flower')
+scatter=random.Random(7127); fallen=Mesh('Orchard_Leaf_Litter','LitterLeaf')
 for cx,cz,s in [(5,-4,1.5),(8,-2,1.2),(-9.2,4.9,1.7),(7.75,5.1,1.4),(-3.3,-4.2,.78),(4.1,2.7,.75)]:
  for j in range(58):
   x=cx+scatter.gauss(0,s);z=cz+scatter.gauss(0,s*.74)
@@ -686,6 +725,23 @@ for cx,cz,s in [(5,-4,1.5),(8,-2,1.2),(-9.2,4.9,1.7),(7.75,5.1,1.4),(-3.3,-4.2,.
   ux=r*math.cos(a);uz=r*math.sin(a);vx=-uz*.46;vz=ux*.46
   fallen.face([(x-ux,y,z-uz),(x+vx,y+.015,z+vz),(x+ux,y,z+uz),(x-vx,y,z-vz)],[(0,.5),(.5,1),(1,.5),(.5,0)])
 fallen.finish()
+# Actual small source-local debris and low moss clumps, outside the clean walk.
+moss=Mesh('Contact_Moss_Clusters','Moss');chips=Mesh('Contact_Stone_Chips','Stone')
+scraps=Mesh('Market_Wood_Shavings','Wood');paper=Mesh('Market_Paper_Scraps','Linen')
+for cx,cz,spread in [(5,-4,.52),(8,-2,.42),(7.75,5.1,.48),(2.20,-2.8,.30),(2.21,-.5,.30),(3.04,2.9,.36),(4.95,1.08,.30),(-5.47,1.6,.28),(-6.90,6.6,.32),(10.1,2.6,.38),(-3.5,-6.1,.34)]:
+ for k in range(18):
+  a=scatter.random()*math.tau;r=spread*math.sqrt(scatter.random());x=cx+math.cos(a)*r;z=cz+math.sin(a)*r
+  if abs(x)<1.8:continue
+  size=scatter.uniform(.020,.065)
+  if k<12:
+   pts=[(x+math.cos(j*math.tau/5)*size,.004+scatter.uniform(0,.006),z+math.sin(j*math.tau/5)*size*.68) for j in range(5)]
+   moss.face(list(reversed(pts)))
+  elif k<15:chips.stone((x,.012,z),(size,.021,size*.68))
+  elif cx<0 or cx>9:
+   scraps.box((x,.012,z),(size*1.7,.012,.018))
+ if cx<0 or cx>9:
+  paper.face([(cx+.14,.012,cz+.16),(cx+.22,.022,cz+.19),(cx+.23,.015,cz+.12),(cx+.15,.013,cz+.10)])
+for mesh in [moss,chips,scraps,paper]:mesh.finish()
 # Foreground hanging flags stay entirely outside the play rectangle.
 for x in [-12,12]:
  iron.beam((x,0,7.8),(x,4,7.8),.035)
@@ -696,7 +752,7 @@ for mesh in [wood,stone,iron,pots,ivy,flowers,red,linen,goods,copper,flower_spri
 (OUT/'lights.json').write_text(json.dumps([{'pos':spec['position'],'kind':'sconce'} for spec in lamps],indent=2))
 # Static architecture is exported in material batches; animated fruit/crowns keep pivots.
 for mat in M.values():
- obs=[ob for ob in bpy.context.scene.objects if ob.type=='MESH' and ob.data.materials and ob.data.materials[0]==mat and not ob.name.startswith(('canopy_','trunk_','ripe_plum_','Fountain_','Breakfast_','Keeper_','TownSprite_'))]
+ obs=[ob for ob in bpy.context.scene.objects if ob.type=='MESH' and ob.data.materials and ob.data.materials[0]==mat and not ob.name.startswith(('canopy_','trunk_','awning_','ripe_plum_','Fountain_','Breakfast_','Keeper_','TownSprite_'))]
  if len(obs)<2:continue
  bpy.ops.object.select_all(action='DESELECT')
  for ob in obs:ob.select_set(True)
@@ -727,9 +783,9 @@ scene=bpy.context.scene;scene.render.engine='CYCLES';scene.cycles.samples=24;sce
 scene.render.resolution_x=1600;scene.render.resolution_y=1000;scene.render.resolution_percentage=100
 scene.view_settings.view_transform='AgX';scene.view_settings.look='AgX - Medium High Contrast'
 scene.world.use_nodes=True;bg=next(n for n in scene.world.node_tree.nodes if n.type=='BACKGROUND')
-bg.inputs[0].default_value=(.45,.53,.65,1);bg.inputs[1].default_value=.48
-bpy.ops.object.light_add(type='SUN');sun=bpy.context.object;sun.rotation_euler=(.70,-.60,-.43)
-sun.data.energy=2.4;sun.data.color=(1,.87,.69);sun.data.angle=.10
+bg.inputs[0].default_value=(*[float(v) for v in linear('c8d7ff')],1);bg.inputs[1].default_value=.48
+bpy.ops.object.light_add(type='SUN');sun=bpy.context.object;sun.rotation_euler=Vector(cv(-SUNWARD)).to_track_quat('-Z','Y').to_euler()
+sun.data.energy=2.4;sun.data.color=DAYLIGHT['sun']['srgb'];sun.data.angle=.10
 for spec in lamps:
  bpy.ops.object.light_add(type='POINT',location=cv(spec['position']))
  bpy.context.object.data.energy=12;bpy.context.object.data.color=(1,.43,.13)
@@ -740,10 +796,11 @@ def render(pos,target,lens,name,dof=False):
  cam.data.type='PERSP';cam.data.lens=lens;cam.data.dof.use_dof=dof
  cam.data.dof.focus_distance=(Vector(cv(target))-cam.location).length;cam.data.dof.aperture_fstop=5.6
  scene.render.filepath=str(ART/name);bpy.ops.render.render(write_still=True)
-render((0,23.4,15.1),(0,.55,-.4),28,'overhead.png')
-render((0,13.5,11.6),(0,.7,-.4),42,'overview.png')
-render((-2,4.1,8.3),(-1,1.25,-1.0),32,'eye_level.png')
-render((-6.9,3.65,7.8),(-6.9,1.65,1.2),44,'inn_detail.png')
+if '--export-only' not in sys.argv:
+ render((0,23.4,15.1),(0,.55,-.4),28,'overhead.png')
+ render((0,13.5,11.6),(0,.7,-.4),42,'overview.png')
+ render((-2,4.1,8.3),(-1,1.25,-1.0),32,'eye_level.png')
+ render((-6.9,3.65,7.8),(-6.9,1.65,1.2),44,'inn_detail.png')
 bpy.ops.wm.save_as_mainfile(filepath=str(ART/'orchard.blend'))
 report={
  'generator':'Blender 4.5 bpy; tools/make_lane.py',
@@ -751,19 +808,23 @@ report={
  'revision':'Bright handcrafted chunky fantasy town: cream limestone, caramel timber, airy blue slate, verdigris and select vermilion',
  'coordinates':'glTF Y-up; north -Z; metres; walkable paving top exactly 0; tile boundaries integer +/- .5',
  'grid':'assets/maps/town.grid, 21x15, (-10,-7) first cell; architecture only blocked/outside cells',
- 'atlas':'Sixteen 64px metre swatches of staggered limestone. The 64px slate, lime, stone and timber materials retain restrained relief; flower clusters are 32px and painted crown lobes are 80x74.',
+ 'atlas':'Unique 2048px/32m limestone paintings, 64px/m. Typical bonds .234-.484m wide and .125-.234m high, occasional larger. Close honey/peach/grey tones follow broad mineral beds; cool repairs are restrained local clusters. Chiselled pixels, tiny corner losses, mottled mineral islands and worn centres. Meter divisions belong to actual score lines, not colour/noise grid overlays.',
  'textures':SOURCE,'roughness':'Real non-colour roughness maps; cloth/plaster .96, slate .72, copper .42, iron .47, gold .36, window .22',
- 'normal_map':'Subtle authored-pixel tangent relief, non-colour; glTF normalTexture. Metals carry actual metallic factors.',
+ 'normal_map':'Non-colour tangent relief: paving 4x gradient, masonry 2.4x, other materials .75x; glTF normalTexture strength .35. Brighter worn centres subtly lower roughness. Metals carry actual metallic factors.',
+ 'procedural_colour_encoding':'Paving, BackstreetSetts, Stone, Masonry, CanalMasonry, Plaster and WorkshopLime are authored in linear RGB then explicitly encoded to byte sRGB. Their normal/roughness maps remain non-colour data. Existing painting-based material encoding is retained.',
  'materials':[m.name for m in M.values()],
  'fruit_prefix':'ripe_plum_main_','secondary_fruit_prefix':'ripe_plum_secondary_',
- 'shake_pivot':'canopy_main local pivot (5,0,-4); canopy_secondary (8,0,-2)',
+ 'shake_pivot':'canopy_main branch attachment (5,1.55,-4); other crowns use equivalent branch attachments. Main trunk alone shakes; every crown has independent breeze. Awning stripe pivots sit at attached rear beam, linens and supports remain static.',
  'fountain':{'footprint':[[3,1],[5,3]],'centre':[4,2],'basin_floor_y':.30,'water_surface_y':.50,'water_radius':1.035,'rim_top_y':.74,'spouts':spouts,'empty_at_export':True,'central_pedestal_radius':.43},
  'lights':lamps,
- 'interaction_clearance':'Breakfast table (-4,3) top .78; keeper (-5,3) and plum (-3,3) have open overhead. Inn gallery and cloth stop at z2.33, behind interaction row3. Walkable stair-landing tread tops remain y0; real descending flight starts beyond north play boundary z=-6.5. Main trees retain exact pivots.',
- 'previews':['overhead.png (north,56deg, game FOV)','overview.png (north gameplay detail)','eye_level.png (deep gate)','inn_detail.png (layered original storefront)'],
- 'comparison':'Viewed actual reference/visual/copper-square-game.webp and all four distinct supplied Elin references. Kept the north-facing street, exact map/props/anchors, and replaced dark leaf noise, repeated slab floor and continuous thin roofs with original quiet pixel motifs, luminous tree cluster shells and deliberate stepped carpentry.',
+ 'interaction_clearance':'Breakfast table (-4,3) top .78; keeper (-5,3) and plum (-3,3) have open overhead. Inn gallery and cloth stop at z2.33, behind interaction row3. Walkable stair-landing tread tops remain y0; real descending flight starts beyond north play boundary z=-6.5. Tree world anchors retained; crown pivots at branch attachment.',
+ 'previews':[] if '--export-only' in sys.argv else ['overhead.png','overview.png','eye_level.png','inn_detail.png'],
+ 'comparison':'Viewed the supplied warm Japanese-western plaza reference and actual reference/visual/copper-square-game.webp. Retained north-facing street and exact map/props/anchors; replaced repeating slabs and aggressive noise with unique muted warm stone painting and natural green crown ramps.',
  'art_refinement':'Stepped slate roofs and ridge blocks; open verdigris gutters, downspouts and timber corbels; layered gate cornices and archivolt steps; cream stair nosings and descending cheek blocks; clipped pixel flower borders. Canonical tree crown/fruit nodes and material batching preserved.',
- 'foliage':{'method':'Nine original painted lobes per tree, each two crossed upright cutouts and a horizontal cap; 27 quads per crown. Separate six-sided stems and geometric fruit. Alpha-mask .5, double-sided, real depth and shadows.','materials':['Lane_CrownFresh','Lane_CrownBlossom','Lane_FlowerCluster'],'sprite_nodes':['canopy_main','canopy_secondary','TownSprite_FlowerBorders'],'source':'art/market/spring-verge-source.png, tools/make_verge_sprites.py and tools/lane_pixels.py'},
+ 'foliage':{'method':'Nine painted lobes per tree: two crossed upright cutouts plus cap. Main crown locally subdivided for actual sun aperture; other crowns remain 27 quads. Separate six-sided stems and fruit, alpha-mask .5, double-sided real shadows.','materials':['Lane_CrownFresh','Lane_CrownBlossom','Lane_FlowerCluster'],'sprite_nodes':['canopy_main','canopy_secondary','TownSprite_FlowerBorders'],'source':'art/market/spring-verge-source.png, tools/make_verge_sprites.py and tools/lane_pixels.py; calibrated ramps in make_lane.py'},
+ 'rebuild':'blender-4.5 -b --python-exit-code 1 --python tools/make_lane.py -- --export-only && blender-4.5 -b --python-exit-code 1 --python tools/bake_sky_shelter.py -- --town-only',
+ 'canopy_aperture':{'centre':[6.05,2.95,-4.55],'sun_axis':list(SUNWARD),'clear_radius_m':.13,'method':'Conservative physical quad removal through every main crown layer; no fake transparency. Direction from assets/inks/market-morning.json.'},
+ 'breeze':'Explicit canopy branch pivots and individually anchored awning bands; CPU transforms update the same meshes used for live shadows.',
  'mesh_nodes':len([o for o in scene.objects if o.type=='MESH']),
  'triangles':sum(sum(len(p.vertices)-2 for p in o.data.polygons) for o in scene.objects if o.type=='MESH')
 }
