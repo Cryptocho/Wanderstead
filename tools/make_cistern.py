@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Original ancient spring sanctuary. Blender 4.5 LTS, north-facing, metric grid.
 Run python tools/make_cistern_textures.py then blender-4.5 -b -t 4 -P tools/make_cistern.py.
-Textures are original generated artwork; geometry is original authored mesh construction.
+Textures and geometry are original hand-authored pixel/mesh constructions.
 Game x,y,z -> Blender x,-z,y; every collision wall reads assets/maps/cistern.grid.
 """
-import bpy, math, random, json, os
-import numpy as np
+import bpy, bmesh, math, random, json
 from pathlib import Path
 from mathutils import Vector
 R=random.Random(441792)
@@ -30,33 +29,33 @@ def material(name,color,rough=.75,metal=0,texture=None,emission=0):
     if emission:
         p.inputs['Emission Color'].default_value=(*color,1);p.inputs['Emission Strength'].default_value=emission
     if texture:
-        for suffix,socket,noncolor in [('color','Base Color',False),('roughness','Roughness',True),('normal','Normal',True)]:
+        for suffix,socket,noncolor in [('color','Base Color',False),('roughness','Roughness',True),('metallic','Metallic',True),('normal','Normal',True)]:
             n=m.node_tree.nodes.new('ShaderNodeTexImage');n.image=bpy.data.images.load(str(OUT/f'{texture}_{suffix}.png'),check_existing=True)
-            n.interpolation='Linear'
+            n.interpolation='Closest'
             if noncolor:n.image.colorspace_settings.name='Non-Color'
             if socket=='Normal':
-                normal=m.node_tree.nodes.new('ShaderNodeNormalMap');normal.inputs['Strength'].default_value=.65
+                normal=m.node_tree.nodes.new('ShaderNodeNormalMap');normal.inputs['Strength'].default_value=.55
                 m.node_tree.links.new(n.outputs['Color'],normal.inputs['Color']);m.node_tree.links.new(normal.outputs['Normal'],p.inputs['Normal'])
             else:m.node_tree.links.new(n.outputs['Color'],p.inputs[socket])
     M[name]=m;return m
 for name,tex in [('Wet paving','paving'),('Ancient masonry','masonry'),('Spring saint relief','spring_saint'),('Crimson spring standard','banner'),('Ivory mosaic','mosaic'),('Pressure bronze','vent'),('Walnut coffer','walnut'),('Carved acanthus','acanthus')]:
     material(name,(.6,.6,.6),texture=tex,metal=.68 if tex=='vent' else 0)
-material('Drowned foundations',(.045,.105,.102),.95)
-material('Mortar and deep recesses',(.055,.070,.073),.94)
-material('Cut limestone edge',(.38,.40,.37),.81)
-material('Ivory worn edge',(.56,.55,.45),.75)
-material('Verdigris bronze',(.24,.29,.16),.42,.76)
-material('Polished bronze edge',(.48,.29,.09),.35,.8)
-material('Rusted iron',(.085,.105,.103),.68,.69)
-material('Moss shadow',(.095,.14,.057),.97)
-material('Moss sun tips',(.21,.25,.079),.93)
-material('Fern sage',(.21,.30,.105),.91)
-material('Fern dark',(.10,.21,.12),.95)
-material('Terracotta',(.27,.16,.095),.84)
-material('Candle wax',(.72,.56,.29),.62)
-material('Crystal amethyst',(.31,.16,.51),.23,.12)
-material('Crystal bright facets',(.58,.36,.73),.31,.1)
-material('Cold mineral deposits',(.20,.37,.34),.64)
+material('Drowned foundations',(.085,.23,.28),.83)
+material('Mortar and deep recesses',(.15,.23,.29),.90)
+material('Cut limestone edge',(.53,.67,.72),.71)
+material('Ivory worn edge',(.77,.79,.62),.68)
+material('Verdigris bronze',(.20,.49,.42),.45,.58)
+material('Polished bronze edge',(.75,.45,.14),.29,.83)
+material('Rusted iron',(.16,.24,.27),.56,.67)
+material('Moss shadow',(.16,.31,.25),.91)
+material('Moss sun tips',(.39,.58,.29),.86)
+material('Fern sage',(.28,.59,.43),.81)
+material('Fern dark',(.12,.36,.33),.88)
+material('Terracotta',(.50,.29,.22),.79)
+material('Candle wax',(.88,.73,.40),.62)
+material('Crystal amethyst',(.065,.30,.46),.24,.12,emission=.10)
+material('Crystal bright facets',(.24,.68,.64),.30,.08,emission=.18)
+material('Cold mineral deposits',(.27,.58,.57),.51)
 material('Lamp honey glass',(.90,.39,.08),.28,0,emission=.8)
 material('Black slot',(.018,.028,.028),.95)
 class Mesh:
@@ -98,6 +97,10 @@ class Mesh:
         me=bpy.data.meshes.new(self.name);me.from_pydata(self.v,[],self.f);me.materials.append(M[self.mat]);me.update();uv=me.uv_layers.new(name='AuthoredSurfaceUV')
         for poly,coords in zip(me.polygons,self.uv):
             for li,co in zip(poly.loop_indices,coords):uv.data[li].uv=co
+        # glTF tangent export requires triangles/quads before tangent calculation.
+        bm=bmesh.new();bm.from_mesh(me)
+        bmesh.ops.triangulate(bm,faces=[f for f in bm.faces if len(f.verts)>4])
+        bm.to_mesh(me);bm.free();me.update()
         ob=bpy.data.objects.new(self.name,me);bpy.context.collection.objects.link(ob);ob.location=cv(self.origin)
         if parent:ob.parent=parent;ob.location=(0,0,0)
         return ob
@@ -122,7 +125,8 @@ for z in range(-7,8):
         g=glyph(x,z)
         if g=='~':
             box('Drowned foundations',(x,-.67,z),(.99,.24,.99))
-            if R.random()<.45:box('Cold mineral deposits',(x+R.uniform(-.3,.3),-.52,z+R.uniform(-.3,.3)),(.22,.025,.13))
+            if (x+z)%3==0:
+                B['Ivory mosaic'].stone((x+.12,-.527,z-.10),(.34,.018,.28))
         elif g!='#':
             floor_slab(x,z)
             if glyph(x-1,z)=='~':box('Cut limestone edge',(x-.43,.025,z),(.12,.12,.99))
@@ -134,7 +138,7 @@ for z in range(-7,8):
             box('Mortar and deep recesses',(x,h*.5-.14,z),(.935,h+.28,.935))
             exposed=any(glyph(x+dx,z+dz)!='#' for dx,dz in [(1,0),(-1,0),(0,1),(0,-1)])
             if exposed:
-                rows=max(2,int(h/.26));rh=h/rows
+                rows=max(2,int(h/.34));rh=h/rows
                 # True masonry courses, projecting alternating blocks on every exposed face.
                 for k in range(rows):
                     for dx in (-.25,.25):
@@ -165,11 +169,11 @@ def column(x,z,height=2.65,scale=1):
     r=.205*scale
     for y,s in [(.10,.56),(.23,.45),(height-.25,.44),(height-.10,.59)]:
         B['Carved acanthus'].stone((x,y,z),(s*scale,.13,s*scale))
-    beam('Ivory worn edge',(x,.28,z),(x,height-.34,z),r,r*.86,16)
-    for a in range(12):
-        ang=a*math.tau/12;dx=math.cos(ang)*r;dz=math.sin(ang)*r
-        beam('Ancient masonry',(x+dx,.34,z+dz),(x+dx*.86,height-.36,z+dz*.86),.022,.018,5)
-    for y in [.31,.43,height-.40,height-.30]:ring('Ivory worn edge',(x,y,z),r*1.05,.032)
+    beam('Ivory worn edge',(x,.28,z),(x,height-.34,z),r,r*.86,8)
+    for a in range(8):
+        ang=a*math.tau/8;dx=math.cos(ang)*r;dz=math.sin(ang)*r
+        beam('Ancient masonry',(x+dx,.34,z+dz),(x+dx*.86,height-.36,z+dz*.86),.027,.022,4)
+    for y in [.31,.43,height-.40,height-.30]:ring('Ivory worn edge',(x,y,z),r*1.05,.032,n=16)
     # Four carved scroll volutes.
     for dx in [-.19,.19]:ring('Carved acanthus',(x+dx,height-.19,z+.10),.075,.032,'z',12)
 for x,z in [(-6,-6),(-4,-6),(-1,-5),(1,-5),(4,-7),(7,-7),(-3,-3),(3,-3),(-3,1),(3,1)]:
@@ -187,20 +191,30 @@ def arch(x,z,bottom,radius,thickness):
 arch(0,-4.47,1.48,.72,.18)
 arch(-5,-5.49,1.45,.76,.17)
 arch(5.5,-6.49,1.4,.80,.19)
-# Relief is a shallow actual sculpted grid, not a billboard background. The generated
-# material is UV-mapped into geometry inside a thick recessed architectural niche.
+# The spring keeper is an actual stepped stone effigy within a deep open niche.
+# Octagonal head, cupped arms and a bronze ewer tell the lost-water story in silhouette.
 def relief(x,z,y,w,h):
-    box('Black slot',(x,y,z-.07),(w-.10,h-.10,.08))
-    mesh=B['Spring saint relief'];im=bpy.data.images.load(str(OUT/'spring_saint_color.png'),check_existing=True)
-    pix=np.asarray(im.pixels[:]).reshape(im.size[1],im.size[0],4)
-    n=40
-    def pt(i,j):
-        u=i/n;v=j/n;val=pix[min(511,int(v*511)),min(511,int(u*511)),:3].mean()
-        return (x+(u-.5)*w,y+(v-.5)*h,z+float(val)*.038)
-    for j in range(n):
-        for i in range(n):mesh.face([pt(i,j),pt(i+1,j),pt(i+1,j+1),pt(i,j+1)],[(i/n,j/n),((i+1)/n,j/n),((i+1)/n,(j+1)/n),(i/n,(j+1)/n)])
+    box('Mortar and deep recesses',(x,y,z-.07),(w-.10,h-.10,.08))
     for dx in [-w/2-.06,w/2+.06]:box('Carved acanthus',(x+dx,y,z+.015),(.12,h+.23,.15))
-    for yy in [y-h/2-.06,y+h/2+.06]:box('Ivory worn edge',(x,yy,z+.025),(w+.25,.12,.15))
+    for yy in [y-h/2-.06,y+h/2+.06]:B['Ivory worn edge'].stone((x,yy,z+.025),(w+.25,.12,.25))
+    # Broken concentric halo: individually cut voussoirs, no picture plane.
+    for i in range(11):
+        a=(i+.5)*math.tau/12
+        if i!=7:
+            beam('Cold mineral deposits',(x+math.cos(a)*.33,y+.25+math.sin(a)*.33,z+.055),(x+math.cos(a)*.33,y+.25+math.sin(a)*.33,z+.13),.068,n=4)
+    beam('Spring saint relief',(x,y+.29,z+.08),(x,y+.29,z+.27),.15,.135,8)
+    beam('Spring saint relief',(x,y+.05,z+.16),(x,y+.20,z+.16),.065,n=6)
+    for dx in [-.052,.052]:
+        box('Cold mineral deposits',(x+dx,y+.31,z+.279),(.033,.018,.013))
+    B['Spring saint relief'].stone((x,y-.22,z+.12),(.47,.62,.25))
+    for dx in [-.20,.20]:
+        B['Ivory worn edge'].stone((x+dx,y-.53,z+.23),(.16,.24,.27))
+        beam('Spring saint relief',(x+dx,y+.01,z+.18),(x+dx*.62,y-.18,z+.39),.072,n=6)
+    beam('Polished bronze edge',(x,y-.35,z+.35),(x,y-.10,z+.35),.12,.15,8)
+    ring('Verdigris bronze',(x+.16,y-.18,z+.35),.10,.024,'z',12)
+    beam('Ivory worn edge',(x,y+.48,z+.10),(x,y+.48,z+.25),.185,.16,4)
+    for dx in [-.13,0,.13]:
+        box('Cold mineral deposits',(x+dx,y-.62,z+.25),(.055,.18,.055))
 relief(0,-4.46,1.25,1.22,1.62)
 # Western service alcove: a real carved cabinet, hanging bronze implements and vials.
 box('Walnut coffer',(-5,1.18,-5.46),(1.32,1.35,.13))
@@ -241,6 +255,19 @@ for x in [-8.5,4.5,6.5]:
     wall_panel('Black slot',x,z,.74,.74,1.14)
     arch(x,z+.02,.85,.39,.12)
     for dx in [-.24,0,.24]:beam('Rusted iron',(x+dx,.25,z+.045),(x+dx,1.02,z+.045),.022,n=6)
+# Elevated flumes occupy the blocked north wall only. Real troughs, corbels and
+# spill-lips make the service architecture legible above the drowned channels.
+for xa,xb,z,y in [(-9,-7,-6.84,2.35),(3,8,-6.84,2.35)]:
+    for x in range(xa,xb+1):
+        assert glyph(x,round(z))=='#'
+        B['Cut limestone edge'].stone((x,y,z),(.98,.16,.52))
+        for dz in [-.22,.22]:
+            B['Ivory worn edge'].stone((x,y+.14,z+dz),(.98,.20,.12))
+        box('Cold mineral deposits',(x,y+.09,z),(.94,.015,.25))
+        if x%2==0:
+            B['Carved acanthus'].stone((x,y-.18,z+.08),(.32,.25,.36))
+    for x in [xa,xb]:
+        B['Verdigris bronze'].stone((x,y+.04,z+.30),(.28,.12,.22))
 # Copper pipes and leakage: side conduit runs entirely within blocked walls.
 for x,zs in [(-9.47,range(-5,5)),(8.47,range(-4,4))]:
     for z in zs:
@@ -286,16 +313,23 @@ wh=Mesh('wheel_pickup_bronze','Polished bronze edge',(6,.86,-4));wh.torus((6,.86
 for i in range(6):
     a=i*math.tau/6;wh.beam((6,.86,-4),(6+math.cos(a)*.285,.86+math.sin(a)*.285,-4),.024,n=8)
 wh.beam((6,.86,-4.09),(6,.86,-3.91),.065,n=12);wh.finish(wheelroot)
-# Crystal clumps stay on the blocked east pillars, not on the movement tiles.
+# Site-specific "spring fluorite": stacked hexagonal salt columns, cool luminous
+# cleaved facets and a pale stepped crown, all real silhouette geometry.
 def crystal(x,z,y,size):
-    for i in range(5):
-        xx=x+R.uniform(-.18,.18)*size;zz=z+R.uniform(-.18,.18)*size;h=R.uniform(.28,.73)*size;r=R.uniform(.055,.105)*size
-        n=5;lo=[];hi=[]
-        for j in range(n):
-            a=j*math.tau/n;lo.append((xx+math.cos(a)*r,y,zz+math.sin(a)*r));hi.append((xx+math.cos(a)*r*.86,y+h*.72,zz+math.sin(a)*r*.86))
-        for j in range(n):
-            mat='Crystal bright facets' if j%2 else 'Crystal amethyst';B[mat].face([lo[j],lo[(j+1)%n],hi[(j+1)%n],hi[j]])
-            B[mat].face([hi[j],hi[(j+1)%n],(xx+.02,y+h,zz)])
+    for i,(dx,dz,h,r) in enumerate([(-.16,.05,.38,.13),(.04,0,.74,.16),(.23,.09,.46,.12),(-.01,-.19,.31,.11)]):
+        xx=x+dx*size;zz=z+dz*size;h*=size;r*=size
+        lo=[];hi=[]
+        for j in range(6):
+            a=j*math.tau/6
+            lo.append((xx+math.cos(a)*r,y,zz+math.sin(a)*r))
+            hi.append((xx+math.cos(a)*r*.92,y+h*.76,zz+math.sin(a)*r*.92))
+        for j in range(6):
+            mat='Crystal bright facets' if j in (1,2) else 'Crystal amethyst'
+            B[mat].face([lo[j],lo[(j+1)%6],hi[(j+1)%6],hi[j]])
+            B['Crystal bright facets'].face([hi[j],hi[(j+1)%6],(xx-.025*size,y+h,zz)])
+        B['Cold mineral deposits'].stone((xx,y+.05*size,zz),(r*2.3,.10*size,r*2.2))
+    for dx in [-.28,.28]:
+        B['Crystal bright facets'].stone((x+dx*size,y+.035*size,z+.22*size),(.13*size,.07*size,.13*size))
 for p in [(9,0,1.2,1.1),(3,-3,1.46,.85),(7,-7,2.73,.7)]:crystal(*p)
 # Pressure lids: a truly flat walkable slotted cover with sculpted rim and screws.
 for z in range(-7,8):
@@ -324,8 +358,10 @@ for x,z in [(-3,0),(3,0),(-7,5),(5,5),(-4,-6)]:
 def fern(x,z,y,s):
     for a in range(5):
         ang=a*math.tau/5+R.random()*.3;dx=math.cos(ang);dz=math.sin(ang)
+        last=(x,y,z)
         for j in range(1,5):
             t=j/5;cx=x+dx*t*.26*s;cz=z+dz*t*.26*s;cy=y+math.sin(t*2.1)*.30*s
+            beam('Fern dark',last,(cx,cy,cz),.008*s,.005*s,4);last=(cx,cy,cz)
             length=(1-t)*.14*s
             for side in [-1,1]:
                 ex=cx+dz*side*length;ez=cz-dx*side*length
@@ -370,7 +406,7 @@ LAMPS=[
  {'name':'nave_gold','position':[3.12,1.09,.90],'color':[1.0,.53,.20],'range':4.5,'lumens':2400,'zone':'central nave and pressure covers'},
  {'name':'return_lantern','position':[-2.96,1.00,5.00],'color':[1.0,.55,.24],'range':4.8,'lumens':2600,'zone':'return stair approach'},
  {'name':'east_lantern','position':[9.10,1.56,-3.10],'color':[1.0,.62,.30],'range':4.5,'lumens':2400,'zone':'eastern wheel altar'},
- {'name':'east_amethyst','position':[8.82,1.55,.08],'color':[.56,.34,1.0],'range':3.3,'lumens':1050,'zone':'east crystal annex','type':'crystal'},
+ {'name':'east_amethyst','position':[8.82,1.55,.08],'color':[.30,.75,.87],'range':3.3,'lumens':1050,'zone':'east fluorite annex','type':'crystal'},
  {'name':'north_seep','position':[5.5,.48,-5.9],'color':[.20,.65,.76],'range':5.0,'lumens':1700,'zone':'north flooded channel','type':'seep'},
  {'name':'west_seep','position':[-8.5,.36,-.80],'color':[.17,.62,.71],'range':5.2,'lumens':1450,'zone':'western channel','type':'seep'},
 ]
@@ -390,16 +426,27 @@ scene=bpy.context.scene
 scene['source']='Original Wanderstead cistern; assets/maps/cistern.grid authoritative'
 scene['water_y']=-.22
 # Export does not include preview camera or lights. scene0 is the complete playable geometry.
-bpy.ops.export_scene.gltf(filepath=str(OUT/'cistern.glb'),export_format='GLB',export_yup=True,export_texcoords=True,export_normals=True,export_materials='EXPORT',export_cameras=False,export_lights=False,export_extras=True)
+bpy.ops.export_scene.gltf(filepath=str(OUT/'cistern.glb'),export_format='GLB',export_yup=True,export_texcoords=True,export_normals=True,export_tangents=True,export_materials='EXPORT',export_cameras=False,export_lights=False,export_extras=True)
 meshes=[o for o in scene.objects if o.type=='MESH'];tris=sum(sum(len(p.vertices)-2 for p in o.data.polygons) for o in meshes)
 meta={'scene':'cistern/cistern.glb#Scene0','water_y':-.22,'floor_y':0,'lights':LAMPS,'nodes':{'tool_lid':{'hinge_world':[-6,.55,-.29],'open_local_rotation_x':-1.7},'tonic_lid':{'hinge_world':[-5,.55,-4.29],'open_local_rotation_x':-1.7},'wheel_pickup':{'position':[6,.86,-4],'hide_descendants':True}},'wall_height_rule':['z>=4: .48','x==-10 or x>=9: 1.15','south glyph != #: 2.15','otherwise .74'],'wall_footprint':'integer cell +/- .5; carved north facade columns may reach 2.7','budget':{'mesh_objects':len(meshes),'triangles':tris,'glb_bytes':(OUT/'cistern.glb').stat().st_size},'grid_snapshot':GRID}
+meta['art_direction']={'palette':'cool blue-grey limestone, ivory chamfers, rose walnut, honey bronze, spring fluorite','pixel_density':'32px masonry/ornament; 64px paving/banner/mosaic; nearest texture filtering','source':'original deterministic pixel drawing and faceted mesh construction; no photo textures','shader_hints':{'Wet paving':'preserve albedo and normal; world-space pixel snapping about 32px/m; moderate wet specular','Ivory mosaic':'submerged broken tesserae, not an extra walkable water surface','Pressure bronze':'authored metallic map separates oxidized patches from bare bronze','Crystal amethyst':'legacy material name retained; now cool fluorite with restrained emission','lighting':'pale stone is intended to catch honey point lights against cool ambient fill; do not multiply base colors down'}}
+meta['stage_anchors']={'spring_keeper_effigy':[0,1.25,-4.46],'wheel_reliquary':[6,.49,-4],'fluorite_clumps':[[9,1.2,0],[3,1.46,-3],[7,2.73,-7]],'north_aqueducts':{'west':[-8,2.35,-6.84],'east':[5.5,2.35,-6.84]},'preview_water_only':{'height':-.22,'cells':'~ in grid_snapshot','exported':False}}
 (ART/'integration.json').write_text(json.dumps(meta,ensure_ascii=False,indent=2)+'\n')
 (OUT/'lights.json').write_text(json.dumps([{'pos':[l['position'][0],round(l['position'][1]+(0 if l.get('type') else .09),3),l['position'][2]],'kind':{'crystal':'crystal','seep':'leak'}.get(l.get('type'),'brazier')} for l in LAMPS],indent=2)+'\n')
+# Physical preview water is added only AFTER GLB export. The engine owns its water
+# shader and identical grid footprint; this inspection surface is never shipped.
+watermat=material('Preview-only emerald water',(.045,.29,.31),.22,.15)
+water=Mesh('Preview-only water surface','Preview-only emerald water')
+for z in range(-7,8):
+    for x in range(-10,11):
+        if glyph(x,z)=='~':
+            water.face([(x-.5,-.22,z+.5),(x+.5,-.22,z+.5),(x+.5,-.22,z-.5),(x-.5,-.22,z-.5)])
+water.finish()
 # Real world-space rendered previews; no composited image backdrop or light painting.
 scene.render.engine='CYCLES';scene.cycles.samples=32;scene.cycles.use_denoising=True
 scene.world.color=(.13,.16,.18)
-world=scene.world;world.use_nodes=True;world.node_tree.nodes['Background'].inputs['Color'].default_value=(.14,.19,.24,1);world.node_tree.nodes['Background'].inputs['Strength'].default_value=.16
-scene.view_settings.view_transform='AgX';scene.view_settings.look='AgX - Medium High Contrast';scene.view_settings.exposure=.25
+world=scene.world;world.use_nodes=True;world.node_tree.nodes['Background'].inputs['Color'].default_value=(.20,.28,.35,1);world.node_tree.nodes['Background'].inputs['Strength'].default_value=.30
+scene.view_settings.view_transform='AgX';scene.view_settings.look='AgX - Medium High Contrast';scene.view_settings.exposure=.45
 # Wide faint overhead area light provides legibility without erasing intrinsic recesses.
 def light(name,kind,p,color,power,size=3):
     d=bpy.data.lights.new(name,kind);d.color=color;d.energy=power
@@ -407,9 +454,9 @@ def light(name,kind,p,color,power,size=3):
     else:d.shadow_soft_size=.23
     o=bpy.data.objects.new(name,d);bpy.context.collection.objects.link(o);o.location=cv(p)
     return o
-key=light('Preview cold ceiling bounce','AREA',(0,9,-1),(.57,.70,.83),650,18)
+key=light('Preview cold ceiling bounce','AREA',(0,9,-1),(.65,.80,1.0),1000,18)
 for l in LAMPS:light(l['name'],'POINT',l['position'],l['color'],l['lumens']*.10)
-fill=light('Preview soft south fill','AREA',(-3,6,7),(.62,.66,.68),380,12)
+fill=light('Preview soft south fill','AREA',(-3,6,7),(.76,.83,.88),520,12)
 fill.rotation_euler=(Vector(cv((0,0,-1)))-fill.location).to_track_quat('-Z','Y').to_euler()
 camdata=bpy.data.cameras.new('North-facing gameplay preview');cam=bpy.data.objects.new('North-facing gameplay preview',camdata);bpy.context.collection.objects.link(cam);scene.camera=cam
 camdata.type='PERSP';camdata.sensor_fit='VERTICAL';camdata.sensor_height=24;camdata.lens=12/math.tan(math.radians(17))
@@ -421,10 +468,13 @@ def render(name,target,distance,pitch):
 # Source has preview lights/camera for editable art inspection, never exported into game GLB.
 render('preview_north_overview.png',(0,.5,-.1),27,56)
 bpy.ops.file.pack_all()
+bpy.context.preferences.filepaths.save_version=0
 bpy.ops.wm.save_as_mainfile(filepath=str(ART/'cistern.blend'))
 scene.render.resolution_x=1400;scene.render.resolution_y=1000
 render('preview_north_near.png',(-.4,.45,-3.0),11.5,56)
 render('preview_east_near.png',(5.7,.42,-2.7),9.0,56)
+render('preview_relic_eye.png',(0,1.22,-4.3),4.7,8)
+render('preview_fluorite.png',(8.95,1.50,.04),3.5,24)
 for name in ['tool_lid','tonic_lid']:bpy.data.objects[name].rotation_euler.x=-1.7
 render('preview_coffers_open.png',(-5.5,.36,-2.0),8.5,56)
 print('CISTERN ART COMPLETE',json.dumps(meta['budget']))

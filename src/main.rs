@@ -5,7 +5,9 @@ mod figures;
 mod game;
 mod lens;
 mod map;
+mod pixel_press;
 mod runtime;
+mod sight;
 mod spring;
 mod stage;
 mod tileview;
@@ -72,6 +74,8 @@ fn main() -> ExitCode {
             controls::ControlsPlugin,
             lens::LensPlugin,
             tileview::TileViewPlugin,
+            sight::SightPlugin,
+            pixel_press::PixelPressPlugin,
             stage::StagePlugin,
             spring::SpringPlugin,
             figures::FiguresPlugin,

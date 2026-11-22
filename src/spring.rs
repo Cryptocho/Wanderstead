@@ -18,7 +18,7 @@ use bevy::{
     render::{
         camera::Exposure,
         mesh::Indices,
-        render_resource::{AsBindGroup, PrimitiveTopology, ShaderRef},
+        render_resource::{AsBindGroup, Buffer, PrimitiveTopology, ShaderRef},
     },
     transform::TransformSystem,
 };
@@ -53,12 +53,21 @@ impl Plugin for SpringPlugin {
         );
     }
 }
-#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[derive(Asset, AsBindGroup, TypePath, Debug, Clone)]
 struct WaterInk {
     #[uniform(100)]
     mode: Vec4,
     #[uniform(100)]
     lamps: [Vec4; 9],
+    #[storage(102, read_only, buffer, visibility(fragment))]
+    window: Buffer,
+    #[texture(103)]
+    contour: Handle<Image>,
+    #[texture(104)]
+    banks: Handle<Image>,
+    #[texture(105)]
+    #[sampler(106)]
+    shelter: Handle<Image>,
 }
 impl MaterialExtension for WaterInk {
     fn fragment_shader() -> ShaderRef {
@@ -66,10 +75,14 @@ impl MaterialExtension for WaterInk {
     }
 }
 type Current = ExtendedMaterial<StandardMaterial, WaterInk>;
-#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[derive(Asset, AsBindGroup, TypePath, Debug, Clone)]
 struct AirInk {
     #[uniform(0)]
     settings: Vec4,
+    #[storage(102, read_only, buffer, visibility(fragment))]
+    window: Buffer,
+    #[texture(103)]
+    contour: Handle<Image>,
 }
 impl Material for AirInk {
     fn fragment_shader() -> ShaderRef {
@@ -180,13 +193,50 @@ fn jets() -> Mesh {
     }
     mesh(pos, norm, uv, idx)
 }
+#[derive(Resource)]
+struct SpringProbes {
+    town: EnvironmentMapLight,
+    cistern: EnvironmentMapLight,
+    sky: Handle<Image>,
+}
+
 fn build(
     mut c: Commands,
     roots: Res<Regions>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut waters: ResMut<Assets<Current>>,
     mut airs: ResMut<Assets<AirInk>>,
+    server: Res<AssetServer>,
+    sight: Res<crate::sight::SightWindow>,
+    banks: Res<crate::stage::SiteEdges>,
+    shelter: Res<crate::stage::SkyShelter>,
 ) {
+    let probe = |diffuse, specular, intensity| EnvironmentMapLight {
+        diffuse_map: server.load(diffuse),
+        specular_map: server.load(specular),
+        intensity,
+        ..default()
+    };
+    c.insert_resource(SpringProbes {
+        town: probe(
+            "inks/square-skyfill.dds",
+            "inks/square-reflections.dds",
+            1200.,
+        ),
+        cistern: probe(
+            "inks/cistern-skyfill.dds",
+            "inks/cistern-reflections.dds",
+            225.,
+        ),
+        sky: server.load("inks/morning-sky.png"),
+    });
+    let mut air = |settings| {
+        airs.add(AirInk {
+            settings,
+            window: sight.buffer.clone(),
+            contour: sight.contour.clone(),
+        })
+    };
     c.spawn((
         Name::new("Sun above the copper roofs"),
         Sun,
@@ -203,7 +253,7 @@ fn build(
             minimum_distance: 321.,
             overlap_proportion: 0.06,
         },
-        Transform::from_xyz(-14., 16., 9.).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(-12., 20., 10.).looking_at(Vec3::ZERO, Vec3::Y),
     ));
     let notes = [
         (Area::Town, include_str!("../assets/lanes/lights.json")),
@@ -237,6 +287,16 @@ fn build(
             extension: WaterInk {
                 mode: Vec4::new(mode, 0., 0., 0.),
                 lamps: reflections,
+                window: sight.buffer.clone(),
+                contour: sight.contour.clone(),
+                banks: banks.0.clone(),
+                shelter: shelter
+                    .at(if mode == 0. {
+                        Area::Cistern
+                    } else {
+                        Area::Town
+                    })
+                    .clone(),
             },
         })
     };
@@ -308,9 +368,12 @@ fn build(
         c.spawn((
             Name::new("Light through an opening"),
             Mesh3d(meshes.add(shaft(head.into(), foot.into(), width))),
-            MeshMaterial3d(airs.add(AirInk {
-                settings: Vec4::new(5., head[0], power, if area == Area::Town { 1. } else { 0. }),
-            })),
+            MeshMaterial3d(air(Vec4::new(
+                5.,
+                head[0],
+                power,
+                if area == Area::Town { 1. } else { 0. },
+            ))),
             NotShadowCaster,
             ChildOf(roots.root(area)),
         ));
@@ -330,9 +393,7 @@ fn build(
     c.spawn((
         BeltLantern(false),
         Mesh3d(quad.clone()),
-        MeshMaterial3d(airs.add(AirInk {
-            settings: Vec4::new(4., 0., 1., 0.),
-        })),
+        MeshMaterial3d(air(Vec4::new(4., 0., 1., 0.))),
         Transform::default(),
         NotShadowCaster,
         ChildOf(roots.cistern),
@@ -362,9 +423,7 @@ fn build(
                 Vent,
                 AirCard,
                 Mesh3d(quad.clone()),
-                MeshMaterial3d(airs.add(AirInk {
-                    settings: Vec4::new(1., x as f32, 1., 0.),
-                })),
+                MeshMaterial3d(air(Vec4::new(1., x as f32, 1., 0.))),
                 Transform::from_xyz(x as f32, 0.7, z as f32),
                 Visibility::Hidden,
                 NotShadowCaster,
@@ -382,9 +441,9 @@ fn build(
             let (raw, range, hue): (f32, f32, Color) = match l.kind {
                 LampKind::Window => (9800., 3.4, Color::srgb(1., 0.57, 0.25)),
                 LampKind::Sconce => (4100., 5.5, Color::srgb(1., 0.66, 0.32)),
-                LampKind::Brazier => (7900., 7.3, Color::srgb(1., 0.70, 0.35)),
+                LampKind::Brazier => (7600., 7.1, Color::srgb(1., 0.625, 0.285)),
                 LampKind::Candle => (1850., 3.7, Color::srgb(1., 0.77, 0.51)),
-                LampKind::Crystal => (3150., 5.2, Color::srgb(0.61, 0.48, 1.)),
+                LampKind::Crystal => (4200., 5.5, Color::srgb(0.30, 0.79, 0.94)),
                 LampKind::Leak => (2550., 4.4, Color::srgb(0.29, 0.76, 1.)),
                 LampKind::Smoke => (0., 0., Color::WHITE),
             };
@@ -432,9 +491,7 @@ fn build(
             c.spawn((
                 AirCard,
                 Mesh3d(quad.clone()),
-                MeshMaterial3d(airs.add(AirInk {
-                    settings: Vec4::new(kind, phase, strength, 0.),
-                })),
+                MeshMaterial3d(air(Vec4::new(kind, phase, strength, 0.))),
                 Transform::from_translation(p + Vec3::Y * offset).with_scale(size.extend(1.)),
                 NotShadowCaster,
                 ChildOf(roots.root(area)),
@@ -445,9 +502,7 @@ fn build(
         c.spawn((
             AirCard,
             Mesh3d(quad.clone()),
-            MeshMaterial3d(airs.add(AirInk {
-                settings: Vec4::new(1., p.x, 1., 0.),
-            })),
+            MeshMaterial3d(air(Vec4::new(1., p.x, 1., 0.))),
             Transform::from_translation(p).with_scale(Vec3::new(1.25, 2.1, 1.)),
             NotShadowCaster,
             ChildOf(roots.town),
@@ -460,12 +515,41 @@ fn build(
         c.spawn((
             AirCard,
             Mesh3d(quad.clone()),
-            MeshMaterial3d(airs.add(AirInk {
-                settings: Vec4::new(2., p.x, 1., 0.),
-            })),
+            MeshMaterial3d(air(Vec4::new(
+                2.,
+                p.x,
+                1.,
+                if a == Area::Cistern { 1. } else { 0. },
+            ))),
             Transform::from_translation(p).with_scale(Vec3::new(2., 2.2, 1.)),
             NotShadowCaster,
             ChildOf(roots.root(a)),
+        ));
+    }
+    for (p, size, kind) in [
+        (Vec3::new(-7.9, 1.55, 4.), Vec2::new(4., 3.1), 0.),
+        (Vec3::new(6.1, 1.6, -3.3), Vec2::new(3.4, 3.2), 1.),
+    ] {
+        c.spawn((
+            AirCard,
+            Mesh3d(quad.clone()),
+            MeshMaterial3d(air(Vec4::new(6., p.x, 1., kind))),
+            Transform::from_translation(p).with_scale(size.extend(1.)),
+            NotShadowCaster,
+            ChildOf(roots.town),
+        ));
+    }
+    for (p, size) in [
+        (Vec3::new(-8.85, 0.31, -1.6), Vec2::new(3.3, 0.92)),
+        (Vec3::new(5.6, 0.35, -5.8), Vec2::new(5.4, 1.18)),
+    ] {
+        c.spawn((
+            AirCard,
+            Mesh3d(quad.clone()),
+            MeshMaterial3d(air(Vec4::new(7., p.x, 1., 0.))),
+            Transform::from_translation(p).with_scale(size.extend(1.)),
+            NotShadowCaster,
+            ChildOf(roots.cistern),
         ));
     }
 }
@@ -565,6 +649,7 @@ fn meter(
     lens: Res<LensState>,
     mut ambient: ResMut<AmbientLight>,
     mut clear: ResMut<ClearColor>,
+    probes: Res<SpringProbes>,
     camera: Single<
         (
             &mut Exposure,
@@ -572,6 +657,8 @@ fn meter(
             &mut Bloom,
             Option<&mut Skybox>,
             &mut bevy::pbr::ClusterConfig,
+            &mut EnvironmentMapLight,
+            &mut bevy::render::view::ColorGrading,
         ),
         With<Camera3d>,
     >,
@@ -580,9 +667,18 @@ fn meter(
 ) {
     let town = g.area == Area::Town;
     let d = (lens.distance * 2.).round() as i32;
-    let (mut exp, mut fog, mut bloom, sky, mut clusters) = camera.into_inner();
+    let (mut exp, mut fog, mut bloom, sky, mut clusters, mut environment, mut grade) =
+        camera.into_inner();
     if let Some(mut s) = sky {
-        let b = if town { 5100. } else { 0. };
+        let map = if town {
+            &probes.sky
+        } else {
+            &probes.cistern.diffuse_map
+        };
+        if s.image != *map {
+            s.image = map.clone();
+        }
+        let b = if town { 5100. } else { 29. };
         if s.brightness != b {
             s.brightness = b;
         }
@@ -621,21 +717,29 @@ fn meter(
         end: distance + if town { 65. } else { 32. },
     };
     if switched {
-        sun.illuminance = if town { 34_000. } else { 520. };
+        *environment = if town {
+            probes.town.clone()
+        } else {
+            probes.cistern.clone()
+        };
+        grade.shadows.lift = if town { 0.003 } else { 0.001 };
+        grade.midtones.saturation = if town { 1.04 } else { 1.10 };
+        grade.global.post_saturation = 1.045;
+        sun.illuminance = if town { 37_500. } else { 475. };
         sun.shadows_enabled = town;
         sun.color = if town {
-            Color::srgb(1., 0.87, 0.69)
+            Color::srgb(1., 0.935, 0.805)
         } else {
-            Color::srgb(0.69, 0.73, 0.82)
+            Color::srgb(0.61, 0.76, 0.98)
         };
         ambient.color = if town {
-            Color::srgb(0.76, 0.83, 0.97)
+            Color::srgb(0.72, 0.86, 0.99)
         } else {
-            Color::srgb(0.68, 0.75, 0.86)
+            Color::srgb(0.60, 0.78, 0.98)
         };
-        ambient.brightness = if town { 3400. } else { 370. };
-        exp.ev100 = if town { 11.65 } else { 8.4 };
-        bloom.intensity = if town { 0.085 } else { 0.15 };
+        ambient.brightness = if town { 4100. } else { 230. };
+        exp.ev100 = if town { 11.62 } else { 8.70 };
+        bloom.intensity = if town { 0.07 } else { 0.14 };
         fog.color = if town {
             Color::srgb(0.56, 0.65, 0.73)
         } else {

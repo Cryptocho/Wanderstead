@@ -1,10 +1,12 @@
 #import bevy_pbr::{forward_io::VertexOutput,mesh_view_bindings::globals}
+#import "inks/sight_cutaway.wgsl"::hides_traveler
 @group(2) @binding(0) var<uniform> settings:vec4<f32>; // fire, smoke, fireflies, leak; phase, strength
 fn hash(v:vec2<f32>)->f32 {return fract(sin(dot(v,vec2<f32>(37.37,73.21)))*3789.197);}
 @fragment fn fragment(v:VertexOutput)->@location(0) vec4<f32> {
     let uv=(floor(v.uv*vec2<f32>(28.0,42.0))+vec2<f32>(.5))/vec2<f32>(28.0,42.0);
     let t=globals.time+settings.y;
     let k=settings.x;
+    if (k<3.5 || k>4.5) && hides_traveler(v.position,v.world_position.y){discard;}
     let h=1.0-uv.y;
     if k<.5 {
         let bend=(sin(t*5.7+h*6.0)*.077+sin(t*3.8-h*12.0)*.030)*h;
@@ -35,7 +37,28 @@ fn hash(v:vec2<f32>)->f32 {return fract(sin(dot(v,vec2<f32>(37.37,73.21)))*3789.
         let dotpos=vec2<f32>(.5+.20*sin(phase*6.28+id.y),1.-phase);
         let m=1.-smoothstep(.035,.11,length(fract(track)-dotpos));
         let a=m*smoothstep(.1,.25,phase)*(1.-smoothstep(.6,1.,phase));
-        if a<.02 {discard;}return vec4<f32>(vec3<f32>(1.8,1.22,.41),a*.61);
+        if a<.02 {discard;}return vec4<f32>(mix(vec3<f32>(1.8,1.22,.41),vec3<f32>(.38,1.86,1.53),settings.w),a*.66);
+    }
+    if k>6.5 {
+        // Low veils stay on the water; their scalloped edges dissolve into air.
+        let u=v.uv; let sides=smoothstep(0.,.19,u.x)*(1.-smoothstep(.70,1.,u.x));
+        let h0=.56+.09*sin(u.x*7.+t*.26)+.075*cos(u.x*16.-t*.30);
+        let bank=1.-smoothstep(.03,.33,abs(u.y-h0));
+        let layers=.30+.27*sin(u.x*13.+t*.37)+.24*cos(u.x*6.-t*.29);
+        return vec4<f32>(vec3<f32>(.34,.54,.66),sides*bank*max(layers,0.)*.26);
+    }
+    if k>5.5 {
+        // A few petals follow separate gusts down from real tree crowns.
+        let px=floor(v.uv*vec2<f32>(92.,72.))+.5;
+        for(var i=0;i<6;i=i+1){
+            let seed=f32(i);let phase=fract(t*.073+seed*.167);
+            let c=vec2<f32>(7.+fract(seed*.37)*65.+phase*9.+6.*sin(phase*9.+seed),phase*72.);
+            let d=abs(px-c);let fade=smoothstep(.03,.19,phase)*(1.-smoothstep(.66,.96,phase));
+            if d.x+d.y*1.4<1.0+.82*sin(seed+phase*6.)*sin(seed+phase*6.) {
+                return vec4<f32>(mix(vec3<f32>(1.,.58,.63),vec3<f32>(.70,.94,.25),settings.w),fade*.87);
+            }
+        }
+        discard;
     }
     if k>4.5 {
         let u=v.uv;

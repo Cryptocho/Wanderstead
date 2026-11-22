@@ -80,10 +80,7 @@ impl Default for Expedition {
 pub fn safe(p: IVec2) -> bool {
     p.y >= 4 && (-2..=2).contains(&p.x)
 }
-fn distance(a: IVec2, b: IVec2) -> u32 {
-    a.x.abs_diff(b.x) + a.y.abs_diff(b.y)
-}
-const DIRS: [IVec2; 4] = [IVec2::X, IVec2::NEG_Y, IVec2::NEG_X, IVec2::Y];
+use crate::map::{DIRS, distance};
 impl Expedition {
     pub fn begin(&mut self, day: u32) {
         self.attempts = self.attempts.saturating_add(1);
@@ -140,8 +137,28 @@ impl Expedition {
     pub fn enemy_at(&self, p: IVec2) -> Option<usize> {
         self.enemies.iter().position(|e| e.hp > 0 && e.pos == p)
     }
+    fn admits(&self, p: IVec2) -> bool {
+        map::passable(Area::Cistern, p) && self.enemy_at(p).is_none()
+    }
+    pub(crate) fn attack_reaches(&self, i: usize, target: IVec2) -> bool {
+        let pos = self.enemies[i].pos;
+        let delta = target - pos;
+        let range = distance(pos, target);
+        let limit = if self.enemies[i].kind == EnemyKind::Sentry {
+            1
+        } else {
+            2
+        };
+        range > 0
+            && range <= limit
+            && (delta.x == 0 || delta.y == 0 || delta.x.abs() == delta.y.abs())
+            && map::clear_line(pos, target, |p| self.admits(p))
+    }
     pub fn danger_at(&self, p: IVec2) -> bool {
-        self.enemies.iter().any(|e| e.hp > 0 && e.warn == Some(p))
+        self.enemies
+            .iter()
+            .enumerate()
+            .any(|(i, e)| e.hp > 0 && e.warn == Some(p) && self.attack_reaches(i, p))
             || (map::glyph(Area::Cistern, p) == b'P' && self.beat.wrapping_add(1) % 4 == 0)
     }
     pub fn strike(&mut self, i: usize, damage: u8, stun: bool) {
@@ -172,14 +189,16 @@ impl Expedition {
             head += 1;
             for d in DIRS {
                 let n = p + d;
-                if !map::passable(Area::Cistern, n)
-                    || safe(n)
-                    || self
-                        .enemies
-                        .iter()
-                        .enumerate()
-                        .any(|(j, e)| j != i && e.hp > 0 && e.pos == n)
-                {
+                if !map::passage(p, n, |p| {
+                    map::passable(Area::Cistern, p)
+                        && !safe(p)
+                        && !self
+                            .enemies
+                            .iter()
+                            .enumerate()
+                            .any(|(j, e)| j != i && e.hp > 0 && e.pos == p)
+                        && (p == n || p != player)
+                }) {
                     continue;
                 }
                 let k = map::cell_index(n);
@@ -193,7 +212,7 @@ impl Expedition {
                     first[map::cell_index(p)]
                 };
                 if n == player {
-                    return Some(first[k]);
+                    return (p != origin).then_some(first[k]);
                 }
                 queue[end] = n;
                 end += 1;
@@ -211,10 +230,12 @@ impl Expedition {
                 continue;
             }
             if let Some(target) = self.enemies[i].warn.take() {
-                if target == player && !safe(player) {
+                if target == player && !safe(player) && self.attack_reaches(i, player) {
                     if brace {
                         guarded = true;
-                        if distance(self.enemies[i].pos, player) == 1 {
+                        if distance(self.enemies[i].pos, player) == 1
+                            && map::reach(self.enemies[i].pos, player, |p| self.admits(p))
+                        {
                             self.strike(i, if self.kit == Kit::Buckler { 2 } else { 1 }, false);
                         }
                     } else {
@@ -239,34 +260,23 @@ impl Expedition {
             let pos = self.enemies[i].pos;
             let range = distance(pos, player);
             match self.enemies[i].kind {
-                EnemyKind::Sentry if range == 1 => self.enemies[i].warn = Some(player),
-                EnemyKind::Moth
-                    if range <= 2
-                        && (pos.x == player.x || pos.y == player.y)
-                        && (range == 1
-                            || map::passable(Area::Cistern, pos + (player - pos).signum())) =>
-                {
-                    self.enemies[i].warn = Some(player);
-                }
+                _ if self.attack_reaches(i, player) => self.enemies[i].warn = Some(player),
                 EnemyKind::Moth if range <= 2 => {
                     // A moth orbits instead of following the guard's straight pursuit.
                     if let Some(d) = DIRS
                         .into_iter()
                         .cycle()
-                        .skip((self.beat as usize + i) % 4)
-                        .take(4)
+                        .skip((self.beat as usize + i) % DIRS.len())
+                        .take(DIRS.len())
                         .find(|d| {
                             let n = pos + *d;
-                            map::passable(Area::Cistern, n)
-                                && !safe(n)
-                                && n != player
-                                && self.enemy_at(n).is_none()
+                            map::passage(pos, n, |p| self.admits(p) && !safe(p) && p != player)
                                 && distance(n, player) == 2
                         })
                     {
                         self.enemies[i].pos += d;
-                    } else {
-                        self.enemies[i].warn = Some(player);
+                    } else if let Some(d) = self.next_step(i, player) {
+                        self.enemies[i].pos += d;
                     }
                 }
                 _ if range <= 7
@@ -311,6 +321,81 @@ impl Expedition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn encounter(kind: EnemyKind, pos: IVec2) -> Expedition {
+        let mut e = Expedition::default();
+        e.enemies.push(Enemy {
+            id: 0,
+            kind,
+            pos,
+            hp: 3,
+            warn: None,
+            rest: 0,
+        });
+        e
+    }
+
+    #[test]
+    fn diagonal_warning_guard_and_damage_share_the_same_corner_rule() {
+        let player = IVec2::new(3, -2);
+        let mut e = encounter(EnemyKind::Sentry, IVec2::new(2, -3));
+        assert!(!e.attack_reaches(0, player));
+        e.enemies[0].warn = Some(player);
+        assert!(!e.danger_at(player));
+        assert_eq!(e.advance(player, true), (0, false));
+        assert_eq!(e.enemies[0].hp, 3);
+        e.enemies[0].warn = Some(player);
+        assert_eq!(e.advance(player, false), (0, false));
+
+        let player = IVec2::new(1, -1);
+        let mut e = encounter(EnemyKind::Sentry, IVec2::new(0, -2));
+        assert_eq!(e.advance(player, false), (0, false));
+        assert_eq!(e.enemies[0].warn, Some(player));
+        assert!(e.danger_at(player));
+        e.kit = Kit::Buckler;
+        assert_eq!(e.advance(player, true), (0, true));
+        assert_eq!(e.enemies[0].hp, 1);
+    }
+
+    #[test]
+    fn moth_has_two_cell_lines_but_never_warns_through_walls_or_actors() {
+        let mut e = encounter(EnemyKind::Moth, IVec2::new(0, -2));
+        let player = IVec2::new(2, 0);
+        assert!(e.attack_reaches(0, player));
+        e.advance(player, false);
+        assert_eq!(e.enemies[0].warn, Some(player));
+        assert_eq!(e.advance(player, false), (2, false));
+        e.enemies[0].kind = EnemyKind::Sentry;
+        assert!(!e.attack_reaches(0, player));
+        e.enemies[0].kind = EnemyKind::Moth;
+        e.enemies.push(Enemy {
+            id: 1,
+            kind: EnemyKind::Sentry,
+            pos: IVec2::new(1, -2),
+            hp: 3,
+            warn: None,
+            rest: 0,
+        });
+        assert!(!e.attack_reaches(0, player));
+        e.enemies.truncate(1);
+        e.enemies[0].pos = IVec2::new(2, -3);
+        assert!(!e.attack_reaches(0, IVec2::new(4, -1)));
+    }
+
+    #[test]
+    fn enemies_move_diagonally_but_never_cut_corners_or_enter_the_player() {
+        let mut e = encounter(EnemyKind::Sentry, IVec2::new(0, -3));
+        let player = IVec2::new(2, -1);
+        assert_eq!(e.next_step(0, player), Some(IVec2::new(1, 1)));
+        e.advance(player, false);
+        assert_eq!(e.enemies[0].pos, IVec2::new(1, -2));
+        assert_eq!(e.next_step(0, player), None);
+        e.enemies[0].pos = IVec2::new(2, -3);
+        let player = IVec2::new(3, -2);
+        let d = e.next_step(0, player).unwrap();
+        assert_ne!(d, IVec2::new(1, 1));
+        assert!(map::passage(e.enemies[0].pos, e.enemies[0].pos + d, |p| e.admits(p)));
+    }
     #[test]
     fn locked_strike_can_be_dodged_and_guard_counter_really_kills() {
         let mut e = Expedition::default();

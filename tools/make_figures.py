@@ -8,7 +8,7 @@ Exports include a black silhouette inspection sheet and stable sole pivots.
 from collections import deque
 from pathlib import Path
 import json
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter, ImageChops
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "art/figures/source"
@@ -62,6 +62,7 @@ def cells(file, cols, rows):
 
 sources = {
     "traveler-walk": cells("traveler-short-walk.png", 4, 4),
+    "traveler-diagonal": cells("traveler-diagonal.png", 4, 4),
     "traveler-actions": cells("traveler-short-actions.png", 4, 4),
     "traveler-combat": cells("traveler-combat.png", 4, 4),
     "keeper-work": cells("keeper-short-work.png", 4, 2),
@@ -115,6 +116,7 @@ def export(name, cols, rows, tile, body_pixels, row_names, reference_rows=None):
 
 
 export("traveler-walk", 4, 4, (160,128), 108, ["south","west","north","east"])
+export("traveler-diagonal",4,4,(160,128),108,["southwest","northwest","northeast","southeast"])
 export("traveler-actions", 4, 4, (160,128), 108, ["gather","shake","throw","eat"])
 export("traveler-combat", 4, 4, (160,128), 108, ["strike","brace","hurt/down","drink"], 2)
 export("keeper-work", 4, 2, (160,128), 108, ["stir","knead"])
@@ -122,6 +124,20 @@ export("copper-sentry", 4, 4, (128,128), 108, ["idle","prepare","strike","down"]
 export("phosphor-moth", 4, 4, (128,128), 94, ["idle","prepare","dive","down"], 1)
 export("jelly", 4, 2, (96,96), 78, ["hop","swallow"])
 export("plum", 1, 1, (32,32), 25, ["plum"])
+
+# Project exactly the pose actually on screen. One texel = two source pixels;
+# the additional margin gives a feather even at the boot pivot in the last row.
+contours=Image.new('L',(8*96,8*80))
+for group,name in enumerate(('traveler-walk','traveler-actions','traveler-combat','traveler-diagonal')):
+    alpha=atlases[name].getchannel('A')
+    for frame in range(16):
+        x=frame%4*160;y=frame//4*128
+        small=alpha.crop((x,y,x+160,y+128)).resize((80,64),Image.Resampling.BOX).point(lambda a:255 if a>=60 else 0)
+        field=Image.new('L',(96,80));field.paste(small,(8,8))
+        fringe=field.filter(ImageFilter.MaxFilter(9)).filter(ImageFilter.GaussianBlur(2.15))
+        mask=ImageChops.lighter(field.filter(ImageFilter.MaxFilter(3)),fringe)
+        idx=group*16+frame;contours.paste(mask,(idx%8*96,idx//8*80))
+contours.save(OUT/'traveler-contour.png',optimize=True)
 
 # Portrait uses the newly drawn large head, never the obsolete long figure.
 front = sources["traveler-walk"][1]
@@ -140,7 +156,7 @@ for y in range(64):
 shadow.save(OUT / "contact-shadow.png", optimize=True)
 
 # Every row is shown at native pixels, plus black-on-linen silhouette evidence.
-contact = Image.new("RGB", (1312, 2216), (43,49,54))
+contact = Image.new("RGB", (1312, ((len(atlases)+1)//2)*552+8), (43,49,54))
 silhouettes = Image.new("RGB", contact.size, (215,208,184))
 draw = ImageDraw.Draw(contact)
 sil = ImageDraw.Draw(silhouettes)
@@ -166,4 +182,4 @@ silhouettes.save(ART / "silhouette-check.png")
 sample = atlases["traveler-walk"].crop((0,0,640,128))
 sample.resize((1280,256), Image.Resampling.NEAREST).save(ART / "traveler-sample.png")
 (ART / "atlas-layout.json").write_text(json.dumps(metadata, indent=2)+"\n")
-print("Exported eight original action atlases, portrait, stable sole pivots and silhouette-check.png")
+print("Exported walking and action atlases, pose contours, portrait and silhouette study.")

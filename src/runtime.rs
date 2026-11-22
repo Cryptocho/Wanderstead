@@ -230,6 +230,15 @@ fn key(s: &str) -> Option<KeyCode> {
         "s" => KeyS,
         "d" => KeyD,
         "space" => Space,
+        "kp1" => Numpad1,
+        "kp2" => Numpad2,
+        "kp3" => Numpad3,
+        "kp4" => Numpad4,
+        "kp5" => Numpad5,
+        "kp6" => Numpad6,
+        "kp7" => Numpad7,
+        "kp8" => Numpad8,
+        "kp9" => Numpad9,
         "enter" => Enter,
         "esc" => Escape,
         "plus" => Equal,
@@ -257,6 +266,7 @@ fn wire(
     ui: Res<Interface>,
     lens: Res<LensState>,
     palette: Res<PaletteState>,
+    sight: (ResMut<crate::sight::SightWindow>, Res<Assets<Image>>),
     camera: Single<(&Camera, &GlobalTransform), With<Camera3d>>,
     hover: Res<HoverTile>,
     passes: Res<bevy::diagnostic::DiagnosticsStore>,
@@ -294,6 +304,16 @@ fn wire(
                 "chest":e.seal_open,"remedy":e.tonic_open,"enemies":e.enemies.iter().map(|a|json!([a.id,format!("{:?}",a.kind),a.pos.to_array(),a.hp,a.warn.map(|p|p.to_array())])).collect::<Vec<_>>(),
                 "hover":hover.cell.map(|p|p.to_array()),"path":hover.path.iter().map(|p|p.to_array()).collect::<Vec<_>>()})
         }
+        Some("sight") => {
+            let mut window = sight.0;
+            match words.next() {
+                Some("on") => window.enabled = true,
+                Some("off") => window.enabled = false,
+                _ => {}
+            }
+            let (rect, meta) = window.description();
+            json!({"enabled":window.enabled,"rect":rect,"meta":meta})
+        }
         Some("pick") => {
             let point = words
                 .next()
@@ -310,8 +330,13 @@ fn wire(
                         game.area,
                     )
                 })
-                .and_then(|p| camera.0.viewport_to_world(camera.1, p).ok())
-                .and_then(|ray| crate::tileview::pick_cell(&game, ray, camera.1));
+                .and_then(|p| {
+                    let ray = camera.0.viewport_to_world(camera.1, p).ok()?;
+                    let near = sight
+                        .0
+                        .near(p * win.scale_factor(), ray, camera.1, &sight.1);
+                    crate::tileview::pick_cell(&game, ray, camera.1, near)
+                });
             json!(cell.map(|p| p.to_array()))
         }
         Some("project") => {

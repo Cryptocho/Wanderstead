@@ -4,6 +4,7 @@ from pathlib import Path
 root=Path(__file__).resolve().parents[1]; art=root/'art/market'; out=root/'assets/market';uvs=json.loads((art/'furnishings-uv.json').read_text())
 bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete(use_global=False)
 im=bpy.data.images.load(str(art/'furnishings-atlas.png')); im.pack()
+aw,ah=im.size[:]
 mat=bpy.data.materials.new('Painted market leaves and wares');mat.use_nodes=True
 bs=next(n for n in mat.node_tree.nodes if n.type=='BSDF_PRINCIPLED');bs.inputs['Roughness'].default_value=.90
 s=mat.node_tree.nodes.new('ShaderNodeTexImage');s.image=im;s.interpolation='Closest';mat.node_tree.links.new(s.outputs['Color'],bs.inputs['Base Color']);mat.node_tree.links.new(s.outputs['Alpha'],bs.inputs['Alpha']);mat.surface_render_method='DITHERED';mat.use_backface_culling=False
@@ -14,7 +15,7 @@ class Props:
  def card(self,n,x,y,z,w,tilt=25,yaw=0,flip=False):
   ox,oy,u,v=uvs[n];h=w*v/u;t=math.radians(tilt);a=math.radians(yaw)
   dx,dz=w*.5*math.cos(a),w*.5*math.sin(a);horiz=math.sin(t)*h;hx,hz=horiz*math.sin(a),-horiz*math.cos(a);hy=math.cos(t)*h
-  left,right=(ox+.5)/512,(ox+u-.5)/512;top,bottom=1-(oy+.5)/256,1-(oy+v-.5)/256
+  left,right=(ox+.5)/aw,(ox+u-.5)/aw;top,bottom=1-(oy+.5)/ah,1-(oy+v-.5)/ah
   if flip:left,right=right,left
   self.poly([(x-dx,y,z-dz),(x+dx,y,z+dz),(x+dx+hx,y+hy,z+dz+hz),(x-dx+hx,y+hy,z-dz+hz)],[(left,bottom),(right,bottom),(right,top),(left,top)])
  def object(self,name):
@@ -48,10 +49,15 @@ for iz,row in enumerate(grid):
   for i in range(3):
    ox=growth.uniform(-.39,.39);oz=growth.uniform(-.39,.39)
    town.card(1 if i==0 else 7,ix-10+ox,.012,iz-7+oz,growth.uniform(.29,.47),growth.uniform(43,65),growth.uniform(-29,29),i%2)
+for x,z,w in [(-3.38,-4.93,.66),(-4.71,-2.28,.69),(3.20,-5.35,.46),(7.64,-2.03,.76),(4.43,4.18,.59),(-8.13,4.76,.57),(6.83,4.29,.64)]:
+ town.card(8,x,.018,z,w,27)
 under=Props()
 for args in [(5,-1.0,1.0,-4.32,.68,0),(5,7.03,.84,-6.48,.73,0),
  (7,-3.25,.10,1.34,.65,23),(7,3.06,.10,-3.18,.7,28),(7,-8.50,-.12,-2.39,.53,32),
  (2,-6.70,1.01,-5.43,.48,1),(2,1.20,1.40,-4.45,.45,1),(6,-6.27,.08,.18,.41,20),
  (7,6.85,-.11,1.03,.53,26),(7,4.20,-.06,-5.64,.68,25),(7,-2.75,.02,4.65,.61,20),
  (2,3.07,.59,.49,.44,2),(7,9.09,.02,.23,.48,25),(7,-9.0,-.12,.42,.58,30)]:under.card(*args)
+for x,y,z,w in [(-8.53,-.12,1.89,.84),(-8.50,-.12,-3.04,.60),(4.62,-.13,-5.69,.64),
+                (5.82,-.13,1.08,.51),(-3.21,.04,.89,.53),(.81,.03,-4.65,.50),(8.72,.05,-.02,.74)]:
+ under.card(9,x,y,z,w,25)
 export(town.object('Town flowers and market wares'),'market-trimmings.glb');export(under.object('Cistern banks and hanging standards'),'spring-trimmings.glb')

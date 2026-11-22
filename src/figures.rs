@@ -3,12 +3,12 @@
 use bevy::{
     asset::RenderAssetUsages,
     image::{ImageLoaderSettings, ImageSampler},
-    pbr::{NotShadowCaster, NotShadowReceiver},
+    pbr::{ExtendedMaterial, MaterialExtension, NotShadowCaster, NotShadowReceiver},
     prelude::*,
     render::{
         mesh::{Indices, MeshAabb},
         primitives::Aabb,
-        render_resource::PrimitiveTopology,
+        render_resource::{AsBindGroup, Buffer, PrimitiveTopology, ShaderRef},
         view::{RenderLayers, VisibilitySystems},
     },
     transform::TransformSystem,
@@ -19,6 +19,26 @@ use crate::{
     delve::{Enemy, EnemyKind},
     map::Area,
 };
+
+use crate::sight::{BODY_PIXELS, HEIGHT as TRAVEL_HEIGHT, SightWindow, TravelPose};
+#[derive(Asset, AsBindGroup, TypePath, Clone, Debug)]
+struct FigureInk {
+    #[uniform(100)]
+    allow_cut: u32,
+    #[storage(102, read_only, buffer, visibility(fragment))]
+    window: Buffer,
+    #[texture(103)]
+    contour: Handle<Image>,
+    #[texture(105)]
+    #[sampler(106)]
+    shelter: Handle<Image>,
+}
+impl MaterialExtension for FigureInk {
+    fn fragment_shader() -> ShaderRef {
+        "inks/figures.wgsl".into()
+    }
+}
+type FigureMaterial = ExtendedMaterial<StandardMaterial, FigureInk>;
 
 pub struct FiguresPlugin;
 
@@ -34,11 +54,13 @@ const THROW_TIME: f32 = 0.66;
 
 impl Plugin for FiguresPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<VisualBeat>()
+        app.add_plugins(MaterialPlugin::<FigureMaterial>::default())
+            .init_resource::<VisualBeat>()
             .add_systems(Startup, spawn_figures)
             .add_systems(
                 Update,
                 (
+                    change_shelter,
                     observe_turn,
                     animate_figures,
                     animate_fruit,
@@ -138,13 +160,15 @@ struct VisualBeat {
 
 struct Sheet {
     frames: Vec<Handle<Mesh>>,
-    material: Handle<StandardMaterial>,
+    material: Handle<FigureMaterial>,
+    contour_offset: u32,
     bounds: Aabb,
 }
 
 #[derive(Resource)]
 struct FigureArt {
     walk: Sheet,
+    diagonal: Sheet,
     actions: Sheet,
     combat: Sheet,
     sentry: Sheet,
@@ -209,28 +233,38 @@ fn sheet(
     height: f32,
     server: &AssetServer,
     meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
+    materials: &mut Assets<FigureMaterial>,
+    sight: &SightWindow,
+    shelter: &Handle<Image>,
 ) -> Sheet {
     let texture = server.load_with_settings(path, |settings: &mut ImageLoaderSettings| {
         settings.sampler = ImageSampler::nearest();
     });
-    let material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.78, 0.78, 0.78),
-        base_color_texture: Some(texture.clone()),
-        // A small diffuse floor preserves local colours in a deep alcove.
-        // Phosphor wings themselves emit light; cloth still takes real shadows.
-        emissive_texture: Some(texture),
-        emissive: if path == "figures/phosphor-moth.png" {
-            LinearRgba::rgb(0.34, 0.38, 0.48)
-        } else {
-            LinearRgba::rgb(0.075, 0.068, 0.080)
+    let material = materials.add(ExtendedMaterial {
+        base: StandardMaterial {
+            base_color: Color::srgb(0.98, 0.975, 1.),
+            base_color_texture: Some(texture.clone()),
+            // A small diffuse floor preserves local colours in a deep alcove.
+            // Phosphor wings themselves emit light; cloth still takes real shadows.
+            emissive_texture: Some(texture),
+            emissive: if path == "figures/phosphor-moth.png" {
+                LinearRgba::rgb(0.34, 0.38, 0.48)
+            } else {
+                LinearRgba::rgb(0.086, 0.092, 0.115)
+            },
+            alpha_mode: AlphaMode::Mask(0.5),
+            cull_mode: None,
+            double_sided: true,
+            perceptual_roughness: 1.0,
+            reflectance: 0.0,
+            ..default()
         },
-        alpha_mode: AlphaMode::Mask(0.5),
-        cull_mode: None,
-        double_sided: true,
-        perceptual_roughness: 1.0,
-        reflectance: 0.0,
-        ..default()
+        extension: FigureInk {
+            allow_cut: (!path.starts_with("figures/traveler-")) as u32,
+            window: sight.buffer.clone(),
+            contour: sight.contour.clone(),
+            shelter: shelter.clone(),
+        },
     });
     let mut bounds = Aabb::default();
     let frames = (0..(grid.x * grid.y) as usize)
@@ -255,8 +289,29 @@ fn sheet(
     // therefore need these finite bounds explicitly, including their casters.
     Sheet {
         frames,
+        contour_offset: match path {
+            "figures/traveler-actions.png" => 16,
+            "figures/traveler-combat.png" => 32,
+            "figures/traveler-diagonal.png" => 48,
+            _ => 0,
+        },
         material,
         bounds,
+    }
+}
+
+fn change_shelter(
+    s: Res<Outing>,
+    maps: Res<crate::stage::SkyShelter>,
+    mut surfaces: ResMut<Assets<FigureMaterial>>,
+    mut old: Local<Option<Area>>,
+) {
+    if *old != Some(s.area) {
+        *old = Some(s.area);
+        let field = maps.at(s.area);
+        for (_, mat) in surfaces.iter_mut() {
+            mat.extension.shelter = field.clone();
+        }
     }
 }
 
@@ -265,100 +320,91 @@ fn spawn_figures(
     server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut skin: ResMut<Assets<FigureMaterial>>,
+    sight: Res<SightWindow>,
     state: Res<Outing>,
+    shelter: Res<crate::stage::SkyShelter>,
 ) {
     let human = Vec2::new(160.0, 128.0);
+    let mut make = |path, grid, pixels, body, height| {
+        sheet(
+            path,
+            grid,
+            pixels,
+            body,
+            height,
+            &server,
+            &mut meshes,
+            &mut skin,
+            &sight,
+            shelter.at(state.area),
+        )
+    };
     let art = FigureArt {
-        walk: sheet(
+        walk: make(
             "figures/traveler-walk.png",
-            UVec2::new(4, 4),
+            UVec2::splat(4),
             human,
-            108.0,
-            1.32,
-            &server,
-            &mut meshes,
-            &mut materials,
+            BODY_PIXELS,
+            TRAVEL_HEIGHT,
         ),
-        actions: sheet(
+        diagonal: make(
+            "figures/traveler-diagonal.png",
+            UVec2::splat(4),
+            human,
+            BODY_PIXELS,
+            TRAVEL_HEIGHT,
+        ),
+        actions: make(
             "figures/traveler-actions.png",
-            UVec2::new(4, 4),
+            UVec2::splat(4),
             human,
-            108.0,
-            1.32,
-            &server,
-            &mut meshes,
-            &mut materials,
+            BODY_PIXELS,
+            TRAVEL_HEIGHT,
         ),
-        combat: sheet(
+        combat: make(
             "figures/traveler-combat.png",
-            UVec2::new(4, 4),
+            UVec2::splat(4),
             human,
-            108.0,
-            1.32,
-            &server,
-            &mut meshes,
-            &mut materials,
+            BODY_PIXELS,
+            TRAVEL_HEIGHT,
         ),
-        sentry: sheet(
+        sentry: make(
             "figures/copper-sentry.png",
-            UVec2::new(4, 4),
-            Vec2::splat(128.0),
-            108.0,
+            UVec2::splat(4),
+            Vec2::splat(128.),
+            108.,
             1.34,
-            &server,
-            &mut meshes,
-            &mut materials,
         ),
-        moth: sheet(
+        moth: make(
             "figures/phosphor-moth.png",
-            UVec2::new(4, 4),
-            Vec2::splat(128.0),
-            94.0,
+            UVec2::splat(4),
+            Vec2::splat(128.),
+            94.,
             0.98,
-            &server,
-            &mut meshes,
-            &mut materials,
         ),
-        herbalist: sheet(
+        herbalist: make(
             "market/herbalist.png",
             UVec2::new(4, 1),
             Vec2::new(96., 128.),
             108.,
             1.31,
-            &server,
-            &mut meshes,
-            &mut materials,
         ),
-        keeper: sheet(
+        keeper: make(
             "figures/keeper-work.png",
             UVec2::new(4, 2),
             human,
-            108.0,
+            108.,
             1.30,
-            &server,
-            &mut meshes,
-            &mut materials,
         ),
-        jelly: sheet(
+        jelly: make(
             "figures/jelly.png",
             UVec2::new(4, 2),
-            Vec2::splat(96.0),
-            78.0,
+            Vec2::splat(96.),
+            78.,
             0.70,
-            &server,
-            &mut meshes,
-            &mut materials,
         ),
-        plum: sheet(
-            "figures/plum.png",
-            UVec2::ONE,
-            Vec2::splat(32.0),
-            25.0,
-            0.20,
-            &server,
-            &mut meshes,
-            &mut materials,
-        ),
+        plum: make("figures/plum.png", UVec2::ONE, Vec2::splat(32.), 25., 0.20),
         contact: meshes.add(Circle::new(0.5)),
         contact_material: materials.add(StandardMaterial {
             base_color: Color::WHITE,
@@ -469,6 +515,9 @@ fn spawn_actor(
             NotShadowCaster,
         ))
         .id();
+    if kind == ActorKind::Traveler {
+        commands.entity(card).insert(TravelPose(index as u32));
+    }
     // Keep the sun caster upright; only the visible artwork faces the camera.
     let caster = commands
         .spawn((
@@ -856,6 +905,17 @@ fn direction_row(direction: IVec2) -> usize {
     }
 }
 
+fn walking(art: &FigureArt, dir: IVec2, step: usize) -> (&Sheet, usize) {
+    let row = match (dir.x.signum(), dir.y.signum()) {
+        (-1, 1) => 0,
+        (-1, -1) => 1,
+        (1, -1) => 2,
+        (1, 1) => 3,
+        _ => return (&art.walk, direction_row(dir) * 4 + step),
+    };
+    (&art.diagonal, row * 4 + step)
+}
+
 fn animate_figures(
     mut commands: Commands,
     time: Res<Time>,
@@ -864,12 +924,14 @@ fn animate_figures(
     mut cards: Query<
         (
             &mut Mesh3d,
-            &mut MeshMaterial3d<StandardMaterial>,
+            &mut MeshMaterial3d<FigureMaterial>,
             &mut Transform,
             &mut Visibility,
+            Option<&mut TravelPose>,
         ),
         Without<Actor>,
     >,
+    mut shadows: Query<&mut Transform, (Without<Actor>, Without<MeshMaterial3d<FigureMaterial>>)>,
 ) {
     for (entity, mut actor, mut root) in &mut actors {
         actor.age += time.delta_secs();
@@ -929,10 +991,10 @@ fn animate_figures(
                         } else {
                             1
                         };
-                        (&art.walk, direction_row(actor.facing) * 4 + step)
+                        walking(&art, actor.facing, step)
                     }
                 } else {
-                    (&art.walk, direction_row(actor.facing) * 4 + 1)
+                    walking(&art, actor.facing, 1)
                 }
             }
             ActorKind::Herbalist => {
@@ -999,9 +1061,12 @@ fn animate_figures(
             }
         };
         for entity in [actor.card, actor.caster] {
-            if let Ok((mut mesh, mut material, mut transform, mut visibility)) =
+            if let Ok((mut mesh, mut material, mut transform, mut visibility, pose)) =
                 cards.get_mut(entity)
             {
+                if let Some(mut p) = pose {
+                    p.0 = sheet.contour_offset + frame as u32;
+                }
                 if mesh.0 != sheet.frames[frame] {
                     mesh.0 = sheet.frames[frame].clone();
                 }
@@ -1025,7 +1090,7 @@ fn animate_figures(
                 };
             }
         }
-        if let Ok((_, _, mut shadow, _)) = cards.get_mut(actor.shadow) {
+        if let Ok(mut shadow) = shadows.get_mut(actor.shadow) {
             shadow.translation = Vec3::new(root.translation.x, 0.012, root.translation.z);
             let airborne = (root.translation.y / 0.24).clamp(0.0, 1.0);
             let width = if actor.kind == ActorKind::Jelly {
@@ -1148,7 +1213,7 @@ fn diagnose_figures(
     keys: Res<ButtonInput<KeyCode>>,
     state: Res<Outing>,
     meshes: Res<Assets<Mesh>>,
-    materials: Res<Assets<StandardMaterial>>,
+    materials: Res<Assets<FigureMaterial>>,
     images: Res<Assets<Image>>,
     actors: Query<(
         Entity,
@@ -1159,7 +1224,7 @@ fn diagnose_figures(
     )>,
     cards: Query<(
         &Mesh3d,
-        &MeshMaterial3d<StandardMaterial>,
+        &MeshMaterial3d<FigureMaterial>,
         &Transform,
         &GlobalTransform,
         &Visibility,
@@ -1192,7 +1257,7 @@ fn diagnose_figures(
                 Ok((mesh, material, local, global, visible, inherited, view, aabb, layers)) => {
                     let texture = materials
                         .get(&material.0)
-                        .and_then(|m| m.base_color_texture.as_ref())
+                        .and_then(|m| m.base.base_color_texture.as_ref())
                         .and_then(|t| images.get(t))
                         .map(|image| (image.width(), image.height()));
                     info!(

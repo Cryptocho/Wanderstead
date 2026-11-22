@@ -1,6 +1,9 @@
 // Pixel-anchored moving normals. The actual town sun / nearby braziers produce
 // the highlights; bright bands at inlets are air entrained in moving water.
 #import bevy_pbr::{forward_io::{VertexOutput,FragmentOutput}, mesh_view_bindings::globals, pbr_fragment::pbr_input_from_standard_material, pbr_functions::{apply_pbr_lighting,main_pass_post_lighting_processing}}
+#import "inks/sight_cutaway.wgsl"::hides_traveler
+#import "inks/sky_shelter.wgsl"::visible_sky
+@group(2) @binding(104) var banks:texture_2d<f32>;
 struct WaterData { mode:vec4<f32>, lamps:array<vec4<f32>,9>, }
 @group(2) @binding(100) var<uniform> data:WaterData;
 fn ripple(p:vec2<f32>,t:f32)->vec2<f32> {
@@ -11,10 +14,13 @@ fn ripple(p:vec2<f32>,t:f32)->vec2<f32> {
     return vec2<f32>(a*.52+b*.35,b*.3+c*.42);
 }
 @fragment fn fragment(v:VertexOutput,@builtin(front_facing) front:bool)->FragmentOutput {
+    if hides_traveler(v.position,v.world_position.y){discard;}
     var pbr=pbr_input_from_standard_material(v,front);
     let t=globals.time;
     let wp=v.world_position.xyz;
-    let pos=(floor(wp.xz*38.0)+vec2<f32>(.5))/38.0;
+    let pos=(floor(wp.xz*32.0)+vec2<f32>(.5))/32.0;
+    let sky=visible_sky(wp,vec3<f32>(0.,1.,0.));
+    pbr.diffuse_occlusion*=sky;pbr.specular_occlusion*=sqrt(sky);
     let slope=ripple(pos,t);
     var ring=0.0;
     if data.mode.x>.5 && data.mode.x<1.5 {
@@ -27,12 +33,23 @@ fn ripple(p:vec2<f32>,t:f32)->vec2<f32> {
     pbr.material.perceptual_roughness=mix(.26,.15,fresnel);
     let deep=vec3<f32>(.013,.102,.138);
     let shoal=vec3<f32>(.032,.245,.228);
-    pbr.material.base_color=vec4<f32>(mix(deep,shoal,clamp(.42+slope.x*.33+fresnel*.2,0.0,1.0)),1.0);
+    var shallows=0.;
+    if data.mode.x<.5 {
+        let dims=vec2<i32>(textureDimensions(banks));
+        let cell=vec2<i32>(floor(pos+.5))+vec2<i32>(dims.x/2,3*dims.y/4);
+        let edge=u32(round(textureLoad(banks,cell,0).a*255.));
+        let f=fract(pos+vec2<f32>(.5));
+        let dist=min(min(select(2.,f.x,(edge&1u)!=0u),select(2.,1.-f.x,(edge&2u)!=0u)),min(select(2.,f.y,(edge&4u)!=0u),select(2.,1.-f.y,(edge&8u)!=0u)));
+        shallows=1.-smoothstep(.03,.73,dist);
+    }
+    pbr.material.base_color=vec4<f32>(mix(deep,shoal,clamp(.35+shallows*.44+slope.x*.23+fresnel*.2,0.,1.)),1.);
     var col=apply_pbr_lighting(pbr);
     // Opposite-bank reflections break into horizontal, world-stable slivers.
     let wave=smoothstep(.64,.79,slope.y)*smoothstep(.16,.68,slope.x);
     col=vec4<f32>(col.rgb+mix(vec3<f32>(.009,.062,.098),vec3<f32>(.09,.26,.30),fresnel)+vec3<f32>(.12,.24,.25)*wave+vec3<f32>(.24,.48,.42)*ring,1.0);
     if data.mode.x<.5 {
+        let rims=abs(sin(pos.x*8.6+pos.y*3.+1.3*slope.y+t*.65)+.82*cos(pos.y*8.-.95*slope.x-t*.43));
+        col=vec4<f32>(col.rgb+vec3<f32>(.09,.33,.27)*shallows*(1.-smoothstep(.035,.19,rims)),1.);
         // Project each authored light across the water plane. Ripples break
         // its reflection into travelling flecks rather than a painted stripe.
         let crest=smoothstep(.53,.93,sin(pos.y*32.+slope.x*3.+t*1.7));

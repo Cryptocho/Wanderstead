@@ -16,11 +16,12 @@ pub struct BookPlugin;
 impl Plugin for BookPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Folio>()
+            .init_resource::<BookTypography>()
             .add_systems(Startup, bind_book)
             .add_systems(Update, (scale_book, click_book).in_set(crate::Frame::Input))
             .add_systems(
                 Update,
-                (survey, turn_leaf, typeset_book)
+                (survey, turn_leaf, typeset_book, describe_control)
                     .chain()
                     .in_set(crate::Frame::Draw),
             );
@@ -32,6 +33,24 @@ const FADED: Color = Color::srgb(0.43, 0.33, 0.23);
 const IVORY: Color = Color::srgb(0.96, 0.91, 0.79);
 const MUTED: Color = Color::srgb(0.75, 0.78, 0.66);
 const CELLS: usize = map::WIDTH * map::HEIGHT;
+
+/// Native 1440p: HUD at two physical pixels per 12px font pixel; reading at 30px.
+/// Override this resource before Startup to tune the whole stationery family.
+#[derive(Resource)]
+pub struct BookTypography {
+    pub hud: f32,
+    pub reading: f32,
+    pub heading: f32,
+}
+impl Default for BookTypography {
+    fn default() -> Self {
+        Self {
+            hud: 15.0,
+            reading: 18.75,
+            heading: 22.5,
+        }
+    }
+}
 
 fn modal(page: Page) -> bool {
     matches!(
@@ -47,10 +66,12 @@ fn modal(page: Page) -> bool {
 }
 
 /// One geometry source for both the actual UI nodes and ground-pointer exclusion.
-/// Dimensions are in window-height / 900 units. Bottom-center is always open.
+/// Dimensions are in window-height / 900 units, independent of desktop DPI.
 #[derive(Component, Clone, Copy)]
 enum HudPart {
     Place,
+    Compass,
+    Guide,
     Journal,
     Vitals,
     Notice,
@@ -60,7 +81,9 @@ enum HudPart {
     Mini,
     Field,
 }
-const HUD_PARTS: [HudPart; 9] = [
+const HUD_PARTS: [HudPart; 11] = [
+    HudPart::Compass,
+    HudPart::Guide,
     HudPart::Place,
     HudPart::Journal,
     HudPart::Vitals,
@@ -74,26 +97,33 @@ const HUD_PARTS: [HudPart; 9] = [
 impl HudPart {
     fn rect(self, width: f32) -> [f32; 4] {
         match self {
-            Self::Place => [22.0, 20.0, 350.0, 72.0],
-            Self::Journal => [width - 194.0, 20.0, 172.0, 48.0],
-            Self::Vitals => [22.0, 742.0, 324.0, 58.0],
-            Self::Notice => [22.0, 102.0, 350.0, 112.0],
-            Self::LeftActions => [22.0, 810.0, 324.0, 68.0],
-            Self::TownActions => [width - 306.0, 810.0, 284.0, 68.0],
-            Self::DelveActions => [width - 306.0, 754.0, 284.0, 124.0],
-            Self::Mini => [width - 208.0, 84.0, 186.0, 164.0],
-            Self::Field => [22.0, 454.0, 458.0, 254.0],
+            Self::Place => [12.0, 10.0, 700.0, 24.0],
+            Self::Compass => [12.0, 38.0, 180.0, 58.0],
+            Self::Journal => [458.0, 850.0, 100.0, 36.0],
+            Self::Vitals => [180.0, 812.0, 310.0, 32.0],
+            Self::Guide => [502.0, 812.0, width - 516.0, 32.0],
+            Self::Notice => [180.0, 758.0, width - 194.0, 46.0],
+            Self::LeftActions => [180.0, 850.0, 270.0, 36.0],
+            Self::TownActions => [566.0, 850.0, 218.0, 36.0],
+            Self::DelveActions => [566.0, 850.0, 400.0, 36.0],
+            Self::Mini => [12.0, 746.0, 158.0, 140.0],
+            Self::Field => [180.0, 536.0, 500.0, 206.0],
         }
     }
     fn node(self) -> Node {
-        let [x, y, width, height] = self.rect(0.0);
+        let [x, y, width, height] = self.rect(1600.0);
         let mut node = at(x, y, width, height);
-        if matches!(
-            self,
-            Self::Journal | Self::TownActions | Self::DelveActions | Self::Mini
-        ) {
-            node.left = Val::Auto;
-            node.right = Val::Px(-x - width);
+        if matches!(self, Self::Notice) {
+            // Shrink to real typeset line width and grow upward for the second line.
+            node.width = Val::Auto;
+            node.height = Val::Auto;
+            node.min_width = Val::Px(146.);
+            node.max_width = Val::Percent(84.);
+            node.top = Val::Auto;
+            node.bottom = Val::Px(96.);
+        } else if matches!(self, Self::Guide) {
+            node.width = Val::Auto;
+            node.right = Val::Px(14.0);
         }
         node
     }
@@ -105,7 +135,6 @@ impl HudPart {
             Self::LeftActions => page == Page::Roam,
             Self::TownActions => page == Page::Roam && area == Area::Town,
             Self::DelveActions => page == Page::Roam && area == Area::Cistern,
-            Self::Mini => area == Area::Cistern,
             Self::Field => matches!(page, Page::Aim | Page::Look),
             _ => true,
         }
@@ -120,6 +149,13 @@ pub fn pointer_over_book(p: Vec2, window: Vec2, page: Page, hud: bool, area: Are
     let p = p / scale;
     let width = window.x / scale;
     HUD_PARTS.into_iter().any(|part| {
+        // Painted captions are click-through, including their transparent margin.
+        if matches!(
+            part,
+            HudPart::Place | HudPart::Compass | HudPart::Guide | HudPart::Notice
+        ) {
+            return false;
+        }
         let [x, y, w, h] = part.rect(width);
         part.visible(page, hud, area) && p.x >= x && p.x <= x + w && p.y >= y && p.y <= y + h
     })
@@ -128,13 +164,15 @@ pub fn pointer_over_book(p: Vec2, window: Vec2, page: Page, hud: bool, area: Are
 #[derive(Resource)]
 struct Folio {
     leaf: usize,
-    seen: [bool; CELLS],
+    seen: [[bool; CELLS]; 2],
+    recent: std::collections::VecDeque<&'static str>,
 }
 impl Default for Folio {
     fn default() -> Self {
         Self {
             leaf: 0,
-            seen: [false; CELLS],
+            seen: [[false; CELLS]; 2],
+            recent: std::collections::VecDeque::with_capacity(2),
         }
     }
 }
@@ -152,7 +190,7 @@ enum Panel {
 #[derive(Component, Clone, Copy)]
 enum CopySlot {
     Place,
-    Objective,
+    MapHeading,
     Vitals,
     Notice,
     Heading,
@@ -192,10 +230,16 @@ struct HpFill;
 struct MapCell(IVec2);
 #[derive(Component)]
 struct BreakfastArt;
+#[derive(Component)]
+struct ControlGuide;
+#[derive(Component)]
+struct KitIcon;
 #[derive(Resource)]
 struct Illustrations {
     plain: Handle<Image>,
     fruit: Handle<Image>,
+    buckler_icon: Handle<Image>,
+    hook_icon: Handle<Image>,
 }
 
 struct Stationery {
@@ -204,6 +248,10 @@ struct Stationery {
     glass: Handle<Image>,
     buckler: Handle<Image>,
     hook: Handle<Image>,
+    icons: [Handle<Image>; 8],
+    hud: f32,
+    reading: f32,
+    heading: f32,
 }
 impl Stationery {
     fn text(&self, value: &str, size: f32, color: Color) -> impl Bundle + use<> {
@@ -213,7 +261,7 @@ impl Stationery {
                 font: self.font.clone(),
                 font_size: size,
                 font_smoothing: FontSmoothing::None,
-                line_height: LineHeight::Px(size * 7.0 / 6.0),
+                line_height: LineHeight::Px(size * 1.3),
                 ..default()
             },
             TextColor(color),
@@ -226,7 +274,7 @@ impl Stationery {
         action: Control,
         width: f32,
     ) {
-        self.choice(parent, caption, action, width, 48.0);
+        self.choice(parent, caption, action, width, 36.0);
     }
     fn choice(
         &self,
@@ -247,7 +295,8 @@ impl Stationery {
                     height: Val::Px(height),
                     justify_content: JustifyContent::Center,
                     align_items: AlignItems::Center,
-                    padding: UiRect::horizontal(Val::Px(8.0)),
+                    padding: UiRect::horizontal(Val::Px(6.0)),
+                    column_gap: Val::Px(5.0),
                     flex_shrink: 0.0,
                     ..default()
                 },
@@ -259,11 +308,43 @@ impl Stationery {
                     _ => None,
                 };
                 if let Some(icon) = item {
-                    b.spawn((ImageNode::new(icon.clone()), at(16., 19., 86., 86.)));
-                    b.spawn((self.text(caption, 24., IVORY), at(119., 19., 357., 89.)));
+                    b.spawn((ImageNode::new(icon.clone()), at(16., 16., 76., 76.)));
+                    b.spawn((
+                        self.text(caption, self.reading, IVORY),
+                        at(108., 16., width - 124., 84.),
+                    ));
                     return;
                 }
-                let mut text = b.spawn(self.text(caption, 24.0, IVORY));
+                if let Some(index) = match action {
+                    Control::Context => Some(0),
+                    Control::Look => Some(1),
+                    Control::Book => Some(2),
+                    Control::Toss => Some(3),
+                    Control::Wait => Some(4),
+                    Control::Brace => Some(5),
+                    Control::Skill => Some(6),
+                    Control::Drink => Some(7),
+                    _ => None,
+                } {
+                    let mut icon = b.spawn((
+                        ImageNode::new(self.icons[index].clone()),
+                        Node {
+                            width: Val::Px(24.0),
+                            height: Val::Px(24.0),
+                            flex_shrink: 0.0,
+                            ..default()
+                        },
+                    ));
+                    if matches!(action, Control::Skill) {
+                        icon.insert(KitIcon);
+                    }
+                }
+                let size = if height > 36.0 {
+                    self.reading
+                } else {
+                    self.hud
+                };
+                let mut text = b.spawn(self.text(caption, size, IVORY));
                 match action {
                     Control::Context => {
                         text.insert(CopySlot::Context);
@@ -300,58 +381,77 @@ fn at(x: f32, y: f32, width: f32, height: f32) -> Node {
         ..default()
     }
 }
-fn bind_book(mut commands: Commands, assets: Res<AssetServer>) {
+fn bind_book(mut commands: Commands, assets: Res<AssetServer>, typeface: Res<BookTypography>) {
     let s = Stationery {
         font: assets.load("book/FusionPixel.ttf"),
         button: assets.load("book/expedition-button.png"),
         glass: assets.load("book/expedition-glass.png"),
         buckler: assets.load("book/buckler-plate.png"),
         hook: assets.load("book/hook-plate.png"),
+        icons: [
+            "context", "look", "journal", "fruit", "wait", "brace", "skill", "drink",
+        ]
+        .map(|name| assets.load(format!("book/icon-{name}.png"))),
+        hud: typeface.hud,
+        reading: typeface.reading,
+        heading: typeface.heading,
     };
     commands.insert_resource(Illustrations {
         plain: assets.load("book/plain-breakfast.png"),
         fruit: assets.load("book/breakfast.png"),
+        buckler_icon: assets.load("book/icon-brace.png"),
+        hook_icon: assets.load("book/icon-hook.png"),
     });
     commands
         .spawn((
-            Name::new("Location and next expedition goal"),
+            Name::new("Day, place and current goal"),
             HudPart::Place,
-            sliced(s.glass.clone()),
             HudPart::Place.node(),
             GlobalZIndex(10),
         ))
         .with_children(|p| {
             p.spawn((
-                s.text("", 24.0, IVORY),
+                s.text("", s.hud, IVORY),
                 CopySlot::Place,
-                at(14.0, 8.0, 322.0, 28.0),
+                hud_shadow(),
+                at(0., 0., 700., 24.),
+            ));
+        });
+    commands
+        .spawn((
+            Name::new("North-locked compass and actual grid position"),
+            HudPart::Compass,
+            HudPart::Compass.node(),
+            GlobalZIndex(10),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                ImageNode::new(assets.load("book/compass.png")),
+                at(0., 10., 48., 48.),
             ));
             p.spawn((
-                s.text("", 20.0, MUTED),
-                CopySlot::Objective,
-                at(14.0, 40.0, 322.0, 26.0),
+                s.text("N", s.hud, IVORY),
+                hud_shadow(),
+                at(20., 0., 20., 16.),
+            ));
+            p.spawn((
+                s.text("", s.hud, IVORY),
+                CopySlot::MapHeading,
+                hud_shadow(),
+                at(54., 28., 120., 20.),
             ));
         });
     commands
         .spawn((
             Name::new("Travel journal clasp"),
             HudPart::Journal,
-            Button,
-            Control::Book,
-            Available(true),
-            sliced(s.button.clone()),
             HudPart::Journal.node(),
             GlobalZIndex(10),
         ))
-        .with_children(|p| {
-            p.spawn((
-                s.text("J  旅行手记", 24.0, IVORY),
-                at(19.0, 9.0, 144.0, 30.0),
-            ));
-        });
+        .with_children(|p| s.button(p, "J 手记", Control::Book, 100.));
     commands
         .spawn((
-            Name::new("Actual expedition health"),
+            Name::new("Actual player health and carried resources"),
             HudPart::Vitals,
             sliced(s.glass.clone()),
             HudPart::Vitals.node(),
@@ -360,26 +460,44 @@ fn bind_book(mut commands: Commands, assets: Res<AssetServer>) {
         .with_children(|p| {
             p.spawn((
                 ImageNode::new(assets.load("figures/traveler-portrait.png")),
-                at(8.0, 5.0, 48.0, 48.0),
+                at(4., 0., 32., 32.),
             ));
             p.spawn((
-                s.text("", 20.0, IVORY),
+                s.text("", s.hud, IVORY),
                 CopySlot::Vitals,
-                at(64.0, 9.0, 244.0, 26.0),
+                at(42., 1., 262., 20.),
             ));
             p.spawn((
-                BackgroundColor(Color::srgb(0.10, 0.16, 0.14)),
-                at(64.0, 42.0, 244.0, 6.0),
+                BackgroundColor(Color::srgb(0.16, 0.13, 0.10)),
+                at(42., 25., 260., 4.),
             ));
             p.spawn((
                 HpFill,
                 BackgroundColor(Color::srgb(0.42, 0.73, 0.60)),
-                at(64.0, 42.0, 244.0, 6.0),
+                at(42., 25., 260., 4.),
             ));
         });
     commands
         .spawn((
-            Name::new("Resolved action and next hostile strike"),
+            Name::new("Action explanations and keyboard guide"),
+            HudPart::Guide,
+            HudPart::Guide.node(),
+            GlobalZIndex(10),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                s.text("", s.hud, IVORY),
+                hud_shadow(),
+                ControlGuide,
+                Node {
+                    width: Val::Percent(100.),
+                    ..default()
+                },
+            ));
+        });
+    commands
+        .spawn((
+            Name::new("Resolved action and explicit next-turn danger"),
             HudPart::Notice,
             sliced(s.glass.clone()),
             HudPart::Notice.node(),
@@ -387,101 +505,80 @@ fn bind_book(mut commands: Commands, assets: Res<AssetServer>) {
         ))
         .with_children(|p| {
             p.spawn((
-                s.text("", 20.0, IVORY),
+                s.text("", s.hud, IVORY),
                 CopySlot::Notice,
-                at(14.0, 8.0, 322.0, 96.0),
+                Node {
+                    margin: UiRect::axes(Val::Px(10.), Val::Px(5.)),
+                    ..default()
+                },
             ));
         });
     commands
         .spawn((
-            Name::new("Left corner interaction and investigation"),
+            Name::new("Context and investigation"),
             HudPart::LeftActions,
-            sliced(s.glass.clone()),
             HudPart::LeftActions.node(),
             GlobalZIndex(10),
         ))
         .with_children(|p| {
-            p.spawn(Node {
-                column_gap: Val::Px(8.0),
-                ..at(12.0, 10.0, 300.0, 48.0)
-            })
-            .with_children(|row| {
-                s.button(row, "", Control::Context, 196.0);
-                s.button(row, "V 调查", Control::Look, 96.0);
-            });
+            s.button(p, "", Control::Context, 160.);
+            s.button(p, "V 调查", Control::Look, 102.);
         });
     commands
         .spawn((
-            Name::new("Town fruit and waiting actions"),
+            Name::new("Town fruit and wait"),
             HudPart::TownActions,
-            sliced(s.glass.clone()),
             HudPart::TownActions.node(),
             GlobalZIndex(10),
         ))
         .with_children(|p| {
-            p.spawn(Node {
-                column_gap: Val::Px(8.0),
-                ..at(12.0, 10.0, 260.0, 48.0)
-            })
-            .with_children(|row| {
-                s.button(row, "T 投果", Control::Toss, 120.0);
-                s.button(row, "等候", Control::Wait, 132.0);
-            });
+            s.button(p, "T 投果", Control::Toss, 102.);
+            s.button(p, "空格 等候", Control::Wait, 116.);
         });
     commands
         .spawn((
-            Name::new("Cistern mouse combat instruments"),
+            Name::new("Guard, equipped skill, tonic and wait"),
             HudPart::DelveActions,
-            sliced(s.glass.clone()),
             HudPart::DelveActions.node(),
             GlobalZIndex(10),
         ))
         .with_children(|p| {
-            p.spawn(Node {
-                column_gap: Val::Px(8.0),
-                ..at(12.0, 10.0, 260.0, 48.0)
-            })
-            .with_children(|row| {
-                s.button(row, "Q 护卫", Control::Brace, 120.0);
-                s.button(row, "F 器物技", Control::Skill, 132.0);
-            });
-            p.spawn(Node {
-                column_gap: Val::Px(8.0),
-                ..at(12.0, 66.0, 260.0, 48.0)
-            })
-            .with_children(|row| {
-                s.button(row, "R 药水", Control::Drink, 120.0);
-                s.button(row, "等候", Control::Wait, 132.0);
-            });
+            s.button(p, "Q 护卫", Control::Brace, 92.);
+            s.button(p, "", Control::Skill, 100.);
+            s.button(p, "R 药水", Control::Drink, 92.);
+            s.button(p, "空格 等候", Control::Wait, 116.);
         });
     commands
         .spawn((
-            Name::new("Surveyed B1 map from the authored grid"),
+            Name::new("Explored authored map, town and B1"),
             HudPart::Mini,
             sliced(s.glass.clone()),
             HudPart::Mini.node(),
             GlobalZIndex(10),
         ))
         .with_children(|p| {
-            p.spawn((s.text("B1   北 ↑", 20.0, MUTED), at(14.0, 7.0, 158.0, 25.0)));
+            p.spawn((
+                s.text("青：你  金：出入口", s.hud, MUTED),
+                at(8., 5., 144., 20.),
+            ));
             for z in 0..map::HEIGHT {
                 for x in 0..map::WIDTH {
                     let cell = map::MIN + IVec2::new(x as i32, z as i32);
                     p.spawn((
                         MapCell(cell),
                         BackgroundColor(Color::NONE),
-                        at(14.0 + x as f32 * 7.0, 34.0 + z as f32 * 7.0, 6.0, 6.0),
+                        at(16. + x as f32 * 6., 28. + z as f32 * 6., 5., 5.),
                     ));
                 }
             }
             p.spawn((
-                s.text("青：你  金：出口", 18.0, MUTED),
-                at(14.0, 140.0, 164.0, 22.0),
+                s.text("走过的地方留在图上", s.hud, MUTED),
+                at(8., 121., 144., 17.),
             ));
         });
     commands
         .spawn((
-            Name::new("Field investigation paper"),
+            Name::new("Investigation and throw confirmation"),
             HudPart::Field,
             sliced(assets.load("book/field-tag.png")),
             HudPart::Field.node(),
@@ -489,60 +586,60 @@ fn bind_book(mut commands: Commands, assets: Res<AssetServer>) {
         ))
         .with_children(|p| {
             p.spawn((
-                s.text("", 24.0, INK),
+                s.text("", s.reading, INK),
                 CopySlot::FieldHeading,
-                at(24.0, 14.0, 410.0, 32.0),
+                at(24., 14., 452., 28.),
             ));
             p.spawn((
-                s.text("", 24.0, INK),
+                s.text("", s.reading, INK),
                 CopySlot::FieldBody,
-                at(24.0, 56.0, 410.0, 132.0),
+                at(24., 51., 452., 96.),
             ));
             p.spawn(Node {
-                column_gap: Val::Px(12.0),
-                ..at(24.0, 194.0, 410.0, 48.0)
+                column_gap: Val::Px(12.),
+                ..at(24., 156., 452., 36.)
             })
             .with_children(|row| {
-                s.button(row, "确认", Control::Confirm, 248.0);
-                s.button(row, "取消", Control::Cancel, 140.0);
+                s.button(row, "确认", Control::Confirm, 248.);
+                s.button(row, "Esc 取消", Control::Cancel, 160.);
             });
         });
     commands
         .spawn((
-            Name::new("Modal journal and expedition outcomes"),
+            Name::new("Bound modal reading pages"),
             Panel::Folio,
             ImageNode::new(assets.load("book/folio.png")),
             Node {
-                left: Val::Percent(50.0),
+                left: Val::Percent(50.),
                 margin: UiRect {
-                    left: Val::Px(-310.0),
+                    left: Val::Px(-380.),
                     ..default()
                 },
                 display: Display::None,
-                ..at(0.0, 136.0, 620.0, 650.0)
+                ..at(0., 96., 760., 700.)
             },
             GlobalZIndex(30),
         ))
         .with_children(|p| {
             p.spawn((
-                s.text("", 28.0, INK),
+                s.text("", s.heading, INK),
                 CopySlot::Heading,
-                at(64.0, 32.0, 420.0, 36.0),
+                at(64., 32., 520., 36.),
             ));
             p.spawn(Node {
-                ..at(500.0, 26.0, 88.0, 48.0)
+                ..at(610., 28., 104., 36.)
             })
-            .with_children(|b| s.button(b, "合上", Control::Cancel, 88.0));
+            .with_children(|b| s.button(b, "Esc 合上", Control::Cancel, 104.));
             p.spawn((
-                s.text("", 24.0, FADED),
+                s.text("", s.reading, FADED),
                 CopySlot::Summary,
-                at(64.0, 98.0, 490.0, 108.0),
+                at(64., 92., 632., 84.),
             ));
             p.spawn((
                 Panel::Illustration,
                 BreakfastArt,
                 ImageNode::new(assets.load("book/breakfast.png")),
-                at(64.0, 92.0, 490.0, 116.0),
+                at(64., 90., 632., 100.),
             ));
             for (page, path) in [
                 (Page::Barter, "book/tonic-plate.png"),
@@ -551,20 +648,20 @@ fn bind_book(mut commands: Commands, assets: Res<AssetServer>) {
                 p.spawn((
                     Panel::Keepsake(page),
                     ImageNode::new(assets.load(path)),
-                    at(468., 99., 83., 83.),
+                    at(606., 94., 76., 76.),
                 ));
             }
             p.spawn((
-                s.text("", 24.0, INK),
+                s.text("", s.reading, INK),
                 CopySlot::Body,
-                at(64.0, 226.0, 490.0, 336.0),
+                at(64., 206., 632., 404.),
             ));
             p.spawn((
                 Panel::GearChoices,
                 Node {
                     flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(14.0),
-                    ..at(64.0, 220.0, 490.0, 270.0)
+                    row_gap: Val::Px(16.),
+                    ..at(64., 216., 632., 240.)
                 },
             ))
             .with_children(|row| {
@@ -572,55 +669,55 @@ fn bind_book(mut commands: Commands, assets: Res<AssetServer>) {
                     row,
                     "圆盾 · 守住窄路\nQ 反击 2；F 盾击 2、打断\n让守卫先出手，你能还它一下",
                     Control::Buckler,
-                    490.0,
-                    126.0,
+                    632.,
+                    108.,
                 );
                 s.choice(
                     row,
                     "钩索 · 隔格先手\nF 两格钩击 2、拉近、打断\n磷蛾隔着一格也够得着",
                     Control::Hook,
-                    490.0,
-                    126.0,
+                    632.,
+                    108.,
                 );
             });
             p.spawn((
                 Panel::ModalControls,
                 Node {
-                    column_gap: Val::Px(12.0),
+                    column_gap: Val::Px(12.),
                     justify_content: JustifyContent::FlexEnd,
-                    ..at(64.0, 574.0, 490.0, 48.0)
+                    ..at(64., 630., 632., 44.)
                 },
             ))
             .with_children(|row| {
                 row.spawn((
                     Panel::BowlChoices,
                     Node {
-                        column_gap: Val::Px(8.0),
+                        column_gap: Val::Px(8.),
                         ..default()
                     },
                 ))
                 .with_children(|b| {
-                    s.button(b, "少一颗", Control::Less, 108.0);
-                    s.button(b, "多一颗", Control::More, 108.0);
+                    s.choice(b, "← 少一颗", Control::Less, 132., 44.);
+                    s.choice(b, "→ 多一颗", Control::More, 132., 44.);
                 });
                 row.spawn((Panel::ServedChoices, Node::default()))
                     .with_children(|b| {
-                        s.button(b, "住到明天", Control::NewMorning, 212.0);
+                        s.choice(b, "住到明天", Control::NewMorning, 212., 44.);
                     });
-                s.button(row, "确认", Control::Confirm, 248.0);
+                s.choice(row, "确认", Control::Confirm, 248., 44.);
             });
             p.spawn((
                 Panel::JournalControls,
                 Node {
                     justify_content: JustifyContent::SpaceBetween,
                     align_items: AlignItems::Center,
-                    ..at(64.0, 574.0, 490.0, 48.0)
+                    ..at(64., 630., 632., 44.)
                 },
             ))
             .with_children(|row| {
-                s.button(row, "上一页", Control::Less, 126.0);
-                row.spawn((s.text("", 24.0, FADED), CopySlot::Leaf));
-                s.button(row, "下一页", Control::More, 126.0);
+                s.choice(row, "← 上一页", Control::Less, 144., 44.);
+                row.spawn((s.text("", s.reading, FADED), CopySlot::Leaf));
+                s.choice(row, "→ 下一页", Control::More, 144., 44.);
             });
         });
 }
@@ -675,7 +772,7 @@ fn click_book(
         });
     }
 }
-fn visible(origin: IVec2, destination: IVec2) -> bool {
+fn visible(area: Area, origin: IVec2, destination: IVec2) -> bool {
     let delta = destination - origin;
     if delta.length_squared() > 20 {
         return false;
@@ -686,23 +783,36 @@ fn visible(origin: IVec2, destination: IVec2) -> bool {
             + (delta.as_vec2() * (step as f32 / steps as f32))
                 .round()
                 .as_ivec2();
-        if map::glyph(Area::Cistern, p) == b'#' {
+        if map::glyph(area, p) == b'#' {
             return false;
         }
     }
     true
 }
 fn survey(outing: Res<Outing>, mut folio: ResMut<Folio>) {
-    if outing.area != Area::Cistern || !outing.is_changed() {
+    if !outing.is_changed() {
         return;
     }
+    if !outing.notice.is_empty() && folio.recent.front().copied() != Some(outing.notice) {
+        if folio.recent.len() == 2 {
+            folio.recent.pop_back();
+        }
+        folio.recent.push_front(outing.notice);
+    }
+    let layer = area_index(outing.area);
     for z in map::MIN.y..=map::MAX.y {
         for x in map::MIN.x..=map::MAX.x {
             let p = IVec2::new(x, z);
-            if !folio.seen[map::cell_index(p)] && visible(outing.player, p) {
-                folio.seen[map::cell_index(p)] = true;
+            if !folio.seen[layer][map::cell_index(p)] && visible(outing.area, outing.player, p) {
+                folio.seen[layer][map::cell_index(p)] = true;
             }
         }
+    }
+}
+fn area_index(area: Area) -> usize {
+    match area {
+        Area::Town => 0,
+        Area::Cistern => 1,
     }
 }
 fn leaf_count(outing: &Outing) -> usize {
@@ -757,7 +867,7 @@ fn tactical_notice(o: &Outing, folio: &Folio) -> String {
     if o.area == Area::Cistern {
         let mut result = String::new();
         for enemy in &o.expedition.enemies {
-            if enemy.hp == 0 || !folio.seen[map::cell_index(enemy.pos)] {
+            if enemy.hp == 0 || !folio.seen[1][map::cell_index(enemy.pos)] {
                 continue;
             }
             if let Some(p) = enemy.warn {
@@ -770,48 +880,59 @@ fn tactical_notice(o: &Outing, folio: &Folio) -> String {
         }
         if !result.is_empty() {
             return format!(
-                "下一拍：{}\n离开红格 / Q护卫\n喷口2伤，护卫无效",
-                short(&result, 22)
+                "危险 · 下一拍 {}  离开红格 / Q护卫；喷口2伤无视护卫。\n{}",
+                short(&result, 40),
+                short(o.notice, 80)
             );
         }
         if o.danger_at(o.player) {
-            return "脚下喷口下一拍涌出！\n离开红格；喷口造成2伤。\n护卫挡不住喷口。".to_owned();
+            return "危险 · 脚下喷口下一拍涌出！离开红格，喷口2伤无视护卫。".to_owned();
         }
     }
-    short(
-        if o.notice.is_empty() {
-            o.prompt()
-        } else {
-            o.notice
-        },
-        44,
-    )
+    if folio.recent.is_empty() {
+        o.prompt().to_owned()
+    } else {
+        let mut lines = folio.recent.iter();
+        let latest = short(lines.next().copied().unwrap_or(""), 84);
+        match lines.next() {
+            Some(previous) => format!("{}\n{}", latest, short(previous, 84)),
+            None => latest,
+        }
+    }
 }
 fn map_color(o: &Outing, folio: &Folio, p: IVec2) -> Color {
     if p == o.player {
         return Color::srgb(0.48, 1.0, 0.86);
     }
-    if !folio.seen[map::cell_index(p)] {
+    if !folio.seen[area_index(o.area)][map::cell_index(p)] {
         return Color::srgb(0.07, 0.11, 0.11);
     }
-    if o.danger_at(p) {
+    if o.area == Area::Cistern && o.danger_at(p) {
         return Color::srgb(0.95, 0.36, 0.24);
     }
-    match map::glyph(Area::Cistern, p) {
-        b'#' => Color::srgb(0.22, 0.28, 0.27),
-        b'~' => Color::srgb(0.16, 0.40, 0.45),
-        b'<' => Color::srgb(0.96, 0.78, 0.37),
+    match map::glyph(o.area, p) {
+        b'#' => Color::srgb(0.24, 0.23, 0.20),
+        b'~' => Color::srgb(0.22, 0.49, 0.57),
+        b'<' | b'>' => Color::srgb(0.96, 0.78, 0.37),
+        b'g' => Color::srgb(0.40, 0.51, 0.32),
+        b'@' | b'P' => Color::srgb(0.86, 0.67, 0.41),
         b'C' if !o.expedition.seal_open => Color::srgb(0.72, 0.48, 0.25),
         b'!' if !o.expedition.tonic_open => Color::srgb(0.74, 0.73, 0.42),
         b'R' if o.expedition.quest == Quest::Seeking => Color::srgb(0.90, 0.59, 0.26),
         _ => Color::srgb(0.50, 0.57, 0.53),
     }
 }
+fn hud_shadow() -> TextShadow {
+    TextShadow {
+        offset: Vec2::new(1.0, 1.0),
+        color: Color::srgba(0.08, 0.06, 0.04, 0.95),
+    }
+}
 fn typeset_book(
     outing: Res<Outing>,
     ui: Res<Interface>,
     folio: Res<Folio>,
-    mut texts: Query<(&CopySlot, &mut Text)>,
+    mut texts: Query<(&CopySlot, &mut Text, &mut TextColor)>,
     mut panels: Query<
         (&mut Node, Option<&Panel>, Option<&HudPart>),
         (Or<(With<Panel>, With<HudPart>)>, Without<HpFill>),
@@ -820,6 +941,7 @@ fn typeset_book(
     mut cells: Query<(&MapCell, &mut BackgroundColor), Without<HpFill>>,
     illustrations: Res<Illustrations>,
     mut illustration: Query<&mut ImageNode, (With<BreakfastArt>, Without<Button>)>,
+    mut kit_icons: Query<&mut ImageNode, (With<KitIcon>, Without<BreakfastArt>, Without<Button>)>,
     mut controls: Query<
         (&Control, &mut Available, &mut ImageNode),
         (With<Button>, Without<BreakfastArt>),
@@ -850,17 +972,15 @@ fn typeset_book(
         node.display = if show { Display::Flex } else { Display::None };
     }
     for (mut node, mut color) in &mut hp {
-        node.width = Val::Px(244.0 * ex.hp as f32 / ex.max_hp.max(1) as f32);
+        node.width = Val::Px(260.0 * ex.hp as f32 / ex.max_hp.max(1) as f32);
         color.0 = if ex.hp <= 3 {
             Color::srgb(0.86, 0.35, 0.25)
         } else {
             Color::srgb(0.42, 0.73, 0.60)
         };
     }
-    if o.area == Area::Cistern {
-        for (MapCell(p), mut color) in &mut cells {
-            color.0 = map_color(o, &folio, *p);
-        }
+    for (MapCell(p), mut color) in &mut cells {
+        color.0 = map_color(o, &folio, *p);
     }
     let fruit = if ui.page == Page::Bowl {
         ui.filling > 0
@@ -872,6 +992,13 @@ fn typeset_book(
             illustrations.fruit.clone()
         } else {
             illustrations.plain.clone()
+        };
+    }
+    for mut icon in &mut kit_icons {
+        icon.image = if ex.kit == Kit::Hook {
+            illustrations.hook_icon.clone()
+        } else {
+            illustrations.buckler_icon.clone()
         };
     }
     for (control, mut available, mut image) in &mut controls {
@@ -926,19 +1053,28 @@ fn typeset_book(
             };
         }
     }
-    for (slot, mut text) in &mut texts {
+    for (slot, mut text, mut color) in &mut texts {
         let value = match slot {
             CopySlot::Place => format!(
-                "{}  ·  第{}天",
+                "第{}天  {}  ·  {}",
+                o.day,
                 if o.area == Area::Town {
                     "铜壶镇"
                 } else {
                     "旧泉回水廊 B1"
                 },
-                o.day
+                goal(o)
             ),
-            CopySlot::Objective => goal(o).to_owned(),
-            CopySlot::Vitals => format!("HP {}/{}  药×{}", ex.hp, ex.max_hp, ex.tonics),
+            CopySlot::MapHeading => format!(
+                "{} ({},{})",
+                if o.area == Area::Town { "镇" } else { "B1" },
+                o.player.x,
+                o.player.y
+            ),
+            CopySlot::Vitals => format!(
+                "HP {}/{}  药{}  果{}  铜{}",
+                ex.hp, ex.max_hp, ex.tonics, o.plums, ex.loot
+            ),
             CopySlot::Notice => tactical_notice(o, &folio),
             CopySlot::Context => format!(
                 "E  {}",
@@ -990,7 +1126,7 @@ fn typeset_book(
             CopySlot::FieldBody => {
                 if ui.page == Page::Aim {
                     format!(
-                        "手里{}颗，三步内可越墙。\n点地面选落点，再点投出。\n合上纸卡会放回口袋。",
+                        "手里{}颗，八向三格内，可越矮墙。\n树、房屋与紧角挡路。\n点地面选落点，再点投出。\nEsc 收回；无效落点的铜扣变暗。",
                         o.plums
                     )
                 } else {
@@ -999,9 +1135,9 @@ fn typeset_book(
             }
             CopySlot::Leaf => format!("{} / {}", folio.leaf + 1, leaf_count(o)),
             CopySlot::Close => if matches!(ui.page, Page::Aim | Page::Look | Page::Gear) {
-                "取消"
+                "Esc 取消"
             } else {
-                "合上"
+                "Esc 合上"
             }
             .to_owned(),
             CopySlot::Confirm => match ui.page {
@@ -1018,8 +1154,59 @@ fn typeset_book(
             }
             .to_owned(),
         };
+        if matches!(slot, CopySlot::Notice) {
+            color.0 = if value.starts_with("危险") {
+                Color::srgb(1.0, 0.66, 0.43)
+            } else {
+                IVORY
+            };
+        }
         if text.0 != value {
             text.0 = value;
+        }
+    }
+}
+
+/// Hover copy lives inside Guide's existing bounds; it cannot cover a target tile.
+/// Disabled controls explain their requirements as well as active controls.
+fn describe_control(
+    controls: Query<(&Interaction, &Control, &Available), With<Button>>,
+    mut guides: Query<&mut Text, With<ControlGuide>>,
+    outing: Res<Outing>,
+) {
+    let hovered = controls
+        .iter()
+        .find(|(interaction, _, _)| **interaction == Interaction::Hovered);
+    let message = match hovered {
+        Some((_, Control::Context, _)) => outing.prompt(),
+        Some((_, Control::Look, _)) => "V 调查格子与敌人；不走拍。Esc 取消。",
+        Some((_, Control::Book, _)) => "J 旅行手记：任务、器物、完整操作与早餐记录；← → 翻页。",
+        Some((_, Control::Toss, Available(false))) => "没有李子。旅店旁拾果，或去东边摇树。",
+        Some((_, Control::Toss, _)) => "T 八向三格内投一颗果子；可越果园矮墙，树、房屋与紧角挡路。",
+        Some((_, Control::Wait, _)) => "空格 / 数字键盘5 等一拍；敌人也会行动，器物重新蓄势。",
+        Some((_, Control::Brace, _)) => {
+            "Q 护卫一拍：挡敌击，邻格反击；圆盾强化反击。喷口无视护卫。"
+        }
+        Some((_, Control::Skill, Available(false))) if outing.expedition.kit == Kit::None => {
+            "尚未带器物：去B1西侧工具箱，选圆盾或钩索。"
+        }
+        Some((_, Control::Skill, Available(false))) => "器物未蓄势：Q 护卫或等候一拍后恢复。",
+        Some((_, Control::Skill, _)) if outing.expedition.kit == Kit::Hook => {
+            "F 正面两格钩击2伤、拉近、打断；朝向随最后一步改变。"
+        }
+        Some((_, Control::Skill, _)) => "F 正面邻格盾击2伤并打断；朝向随最后一步改变。",
+        Some((_, Control::Drink, Available(false))) if outing.expedition.tonics == 0 => {
+            "药囊为空：B1药箱或镇上药师可补给；一颗李子换一瓶。"
+        }
+        Some((_, Control::Drink, Available(false))) => "生命已满；药水保留在药囊中。",
+        Some((_, Control::Drink, _)) => "R 喝一瓶药，恢复4HP并走一拍；满血不消耗。",
+        _ if outing.turn < 4 => "斜走：同时按两个方向键，或按小键盘。J 翻手记。",
+        _ => "",
+    };
+    for mut text in &mut guides {
+        if text.0 != message {
+            text.0.clear();
+            text.0.push_str(message);
         }
     }
 }
@@ -1087,7 +1274,7 @@ fn body(o: &Outing, ui: &Interface, leaf: usize) -> String {
                 if ex.quest == Quest::Restored { "已经恢复" } else { "仍待修复" },
                 match ex.quest { Quest::Seeking => "尚在回水廊东侧", Quest::Carrying => "已经带在身上", Quest::Restored => "已装回泉台" },
                 ex.hp, ex.max_hp, ex.tonics, kit_name(ex.kit), ex.loot, ex.banked, ex.attempts, ex.deaths, ex.retreats),
-            1 => format!("点地面 / WASD：移动，点邻敌普攻1。\nQ 护卫：全挡敌击，邻格反击1。\n圆盾反击2；喷口2伤无视护卫。\nF {}。\n器物技打断敌人；Q或等候后恢复。\nR 药水：恢复4HP，满血时不消耗。\n\n红格＝下一行动将落下的攻击。\nV 调查、J 手记不走拍；T 投李子。\n滚轮缩放；Home恢复俯视。\n所有常用行动也可点下方按钮。",
+            1 => format!("WASD / 方向键组合；小键盘1-9八向。\n斜走一拍；两侧都空才可穿过墙角。\n点地面寻路；点邻敌普攻1伤。\nQ 护卫：挡敌击，邻格反击1（盾2）。\n喷口2伤无视护卫，快离开红格。\nF {}。\n器物打断敌人；Q或等候后重新蓄势。\nR 药水恢复4HP；满血不消耗。\n空格 / 小键盘5：等一拍。\nV 调查、J 手记不走拍；Esc 取消。\nT 投李子：八向三格，可越果园矮墙。\n滚轮缩放；Home恢复俯视。\n悬停按钮看说明；H 隐藏 / 显示HUD。",
                 match ex.kit { Kit::None => "未带器物，先去西侧工具箱", Kit::Hook => "钩击：正面两格2伤，拉近", Kit::Buckler => "盾击：正面邻格2伤" }),
             2 => "镇北 · 北水门\n穿过拱门，下到旧泉回水廊。\n\nB1 西侧 · 工具箱与药箱\n挑选圆盾或钩索，带上回程的药。\n\nB1 东侧 · 青铜手轮\n拿到后，从南侧阶梯回镇。\n\n镇东 · 泉台；镇西 · 旅店门廊\n归还手轮；早餐仍在壶下等着。".to_owned(),
             _ => {

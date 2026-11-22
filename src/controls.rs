@@ -28,6 +28,63 @@ impl Plugin for ControlsPlugin {
 struct Held {
     dir: IVec2,
     next: f64,
+    pending: Option<IVec2>,
+    deadline: f64,
+}
+impl Held {
+    fn sample(&mut self, now: f64, d: IVec2, immediate: bool) -> Option<IVec2> {
+        if d == IVec2::ZERO {
+            self.dir = d;
+            return self.pending.take();
+        }
+        if self.dir == IVec2::ZERO {
+            self.dir = d;
+            if immediate || (d.x != 0 && d.y != 0) {
+                self.next = now + 0.29;
+                return Some(d);
+            }
+            self.pending = Some(d);
+            self.deadline = now + 0.065;
+        }
+        self.dir = d;
+        if self.pending.is_some() {
+            self.pending = Some(d);
+            if immediate || (d.x != 0 && d.y != 0) || now >= self.deadline {
+                self.next = now + 0.29;
+                return self.pending.take();
+            }
+        } else if now >= self.next {
+            self.next = now + 0.145;
+            return Some(d);
+        }
+        None
+    }
+}
+
+pub(crate) fn direction(k: &ButtonInput<KeyCode>) -> IVec2 {
+    use KeyCode::*;
+    let mut d = IVec2::ZERO;
+    for (codes, delta) in [
+        ([ArrowUp, KeyW, Numpad8], IVec2::NEG_Y),
+        ([ArrowDown, KeyS, Numpad2], IVec2::Y),
+        ([ArrowLeft, KeyA, Numpad4], IVec2::NEG_X),
+        ([ArrowRight, KeyD, Numpad6], IVec2::X),
+    ] {
+        if codes.into_iter().any(|code| k.pressed(code)) {
+            d += delta;
+        }
+    }
+    for (code, delta) in [
+        (Numpad7, IVec2::new(-1, -1)),
+        (Numpad9, IVec2::new(1, -1)),
+        (Numpad1, IVec2::new(-1, 1)),
+        (Numpad3, IVec2::new(1, 1)),
+    ] {
+        if k.pressed(code) {
+            d += delta;
+        }
+    }
+    d.signum()
 }
 
 fn keys(
@@ -57,6 +114,7 @@ fn keys(
         (KeyF, Intent::Skill),
         (KeyR, Intent::Drink),
         (Space, Intent::Wait),
+        (Numpad5, Intent::Wait),
         (KeyE, Intent::Interact),
         (Enter, Intent::Interact),
         (NumpadEnter, Intent::Interact),
@@ -66,34 +124,34 @@ fn keys(
             break;
         }
     }
-    let bindings = [
-        (ArrowUp, KeyW, IVec2::NEG_Y),
-        (ArrowDown, KeyS, IVec2::Y),
-        (ArrowLeft, KeyA, IVec2::NEG_X),
-        (ArrowRight, KeyD, IVec2::X),
-    ];
-    let d = bindings
-        .iter()
-        .find(|(a, b, _)| k.just_pressed(*a) || k.just_pressed(*b))
-        .or_else(|| {
-            bindings
-                .iter()
-                .find(|(a, b, _)| k.pressed(*a) || k.pressed(*b))
-        })
-        .map_or(IVec2::ZERO, |(_, _, d)| *d);
-    let now = t.elapsed_secs_f64();
-    let fresh = bindings
-        .iter()
-        .any(|(a, b, v)| *v == d && (k.just_pressed(*a) || k.just_pressed(*b)));
-    if command.is_none() && d != IVec2::ZERO && (fresh || held.dir != d || now >= held.next) {
-        held.next = now + if fresh || held.dir != d { 0.29 } else { 0.145 };
+    let d = direction(&k);
+    let keypad = [
+        Numpad1, Numpad2, Numpad3, Numpad4, Numpad6, Numpad7, Numpad8, Numpad9,
+    ]
+    .into_iter()
+    .any(|code| k.pressed(code));
+    if command.is_some() {
+        held.pending = None;
+        held.dir = d;
+        held.next = t.elapsed_secs_f64() + 0.29;
+    } else if d == IVec2::ZERO
+        && (keypad
+            || [
+                KeyW, KeyS, KeyA, KeyD, ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
+            ]
+            .into_iter()
+            .any(|code| k.pressed(code)))
+    {
+        // Opposing held directions cancel; this is not a released single-key tap.
+        held.pending = None;
+        held.dir = IVec2::ZERO;
+    } else if let Some(d) = held.sample(t.elapsed_secs_f64(), d, keypad) {
         command = match (ui.page, d.x) {
             (Page::Bowl | Page::Book | Page::Gear, -1) => Some(Intent::Less),
             (Page::Bowl | Page::Book | Page::Gear, 1) => Some(Intent::More),
             _ => Some(Intent::Dir(d)),
         };
     }
-    held.dir = d;
     if let Some(i) = command {
         intents.write(i);
     }
@@ -222,5 +280,119 @@ fn actions(
     {
         error!("写入旅行手记失败：{e}");
         g.notice = "手记没能存到磁盘，当前旅程仍然保留。";
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn near_sequential_chord_commits_one_diagonal_without_release_steps() {
+        let mut held = Held::default();
+        assert_eq!(held.sample(0.0, IVec2::NEG_Y, false), None);
+        assert_eq!(
+            held.sample(0.04, IVec2::new(1, -1), false),
+            Some(IVec2::new(1, -1))
+        );
+        assert_eq!(held.sample(0.08, IVec2::X, false), None);
+        assert_eq!(held.sample(0.09, IVec2::ZERO, false), None);
+    }
+
+    #[test]
+    fn single_taps_flush_on_release_and_holds_repeat_at_action_cadence() {
+        let mut held = Held::default();
+        assert_eq!(held.sample(0.0, IVec2::X, false), None);
+        assert_eq!(held.sample(0.03, IVec2::ZERO, false), Some(IVec2::X));
+        assert_eq!(held.sample(0.04, IVec2::ZERO, false), None);
+        assert_eq!(held.sample(0.10, IVec2::Y, false), None);
+        assert_eq!(held.sample(0.166, IVec2::Y, false), Some(IVec2::Y));
+        assert_eq!(held.sample(0.40, IVec2::new(1, 1), false), None);
+        assert_eq!(
+            held.sample(0.457, IVec2::new(1, 1), false),
+            Some(IVec2::new(1, 1))
+        );
+        assert_eq!(
+            held.sample(0.603, IVec2::new(1, 1), false),
+            Some(IVec2::new(1, 1))
+        );
+    }
+
+    #[test]
+    fn keypad_and_alias_chords_have_all_eight_directions() {
+        use KeyCode::*;
+        for (code, expected) in [
+            (Numpad1, IVec2::new(-1, 1)),
+            (Numpad2, IVec2::Y),
+            (Numpad3, IVec2::new(1, 1)),
+            (Numpad4, IVec2::NEG_X),
+            (Numpad6, IVec2::X),
+            (Numpad7, IVec2::new(-1, -1)),
+            (Numpad8, IVec2::NEG_Y),
+            (Numpad9, IVec2::new(1, -1)),
+        ] {
+            let mut keys = ButtonInput::default();
+            keys.press(code);
+            assert_eq!(direction(&keys), expected);
+            assert_eq!(Held::default().sample(0.0, expected, true), Some(expected));
+        }
+        let mut keys = ButtonInput::default();
+        keys.press(KeyW);
+        keys.press(ArrowUp);
+        keys.press(KeyD);
+        assert_eq!(direction(&keys), IVec2::new(1, -1));
+        keys.press(KeyS);
+        assert_eq!(direction(&keys), IVec2::X);
+    }
+
+    fn click_app() -> App {
+        let mut g = Outing::new(vec![]);
+        g.player = IVec2::new(-2, 0);
+        g.fruit.clear();
+        let mut app = App::new();
+        app.insert_resource(g)
+            .insert_resource(Interface::default())
+            .insert_resource(Time::<Real>::default())
+            .insert_resource(JournalFile::open(true))
+            .add_event::<Intent>()
+            .add_systems(Update, actions);
+        app
+    }
+
+    fn elapse(app: &mut App, seconds: f64) {
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(std::time::Duration::from_secs_f64(seconds));
+        app.update();
+    }
+
+    #[test]
+    fn click_walk_executes_the_previewed_shortest_diagonals_and_stops() {
+        let mut app = click_app();
+        let target = IVec2::new(0, -2);
+        app.world_mut().send_event(Intent::Point(target));
+        app.update();
+        let g = app.world().resource::<Outing>();
+        assert_eq!((g.player, g.turn), (IVec2::new(-1, -1), 1));
+        elapse(&mut app, 0.30);
+        let g = app.world().resource::<Outing>();
+        assert_eq!((g.player, g.turn), (target, 2));
+        elapse(&mut app, 0.30);
+        assert_eq!(app.world().resource::<Outing>().turn, 2);
+    }
+
+    #[test]
+    fn new_keyboard_action_cancels_click_route_and_wait_spends_one_turn() {
+        let mut app = click_app();
+        app.world_mut().send_event(Intent::Point(IVec2::new(0, -2)));
+        app.update();
+        app.world_mut().send_event(Intent::Wait);
+        elapse(&mut app, 0.30);
+        elapse(&mut app, 0.30);
+        let g = app.world().resource::<Outing>();
+        assert_eq!(
+            (g.player, g.turn, g.action),
+            (IVec2::new(-1, -1), 2, ActionKind::Wait)
+        );
     }
 }

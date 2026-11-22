@@ -25,15 +25,18 @@ versions of those figures:
 These six PNG sources were generated with the same OpenAI model on November
 22, 2026. The user's town/ruin screenshots informed camera and short JRPG
 proportions; no character pixels were copied from those screenshots.
+The additional traveler-diagonal.png is an original 4x4 sheet generated using
+the original traveler's direction sheet: SW, NW, NE, SE. The walking, combat
+and action sheets also supply the exact 64 pose outlines in traveler-contour.png.
 
 The herbalist and the eight market/ruin furnishings are original generate_image
 artwork for the same chapter. Sources: art/market/herbalist-source.webp and
 furnishings-source.webp. The latter includes the herb jar, flowers, basket and
 old canal plants. Processing: tools/make_herbalist.py, tools/make_market_atlas.py
-and tools/bake_market_dressing.py (Blender 4.5). The square's original study of
-sixteen single flagstones is in art/lane/town-single-flags-source.png;
-tools/make_lane.py reduces it in linear colour before assigning one slab to each
-walkable square. All use the same service terms as the character artwork.
+and tools/bake_market_dressing.py (Blender 4.5). The two crown lobes and two
+rock clumps are processed from the original spring-verge-source.png by
+tools/make_verge_sprites.py. The early sixteen flagstones remain as a study;
+the active street uses the hand-authored pixel motifs in tools/lane_pixels.py.
 
 Generated output usage is governed by the OpenAI service terms in force for the
 project account; no additional third-party attribution or asset license is

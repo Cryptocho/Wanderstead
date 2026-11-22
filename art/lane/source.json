@@ -1,10 +1,10 @@
 {
   "generator": "Blender 4.5 bpy; tools/make_lane.py",
-  "source": "Original OpenAI generate_image material sheet plus independently generated inn/workshop 2x2 relief sheets (gpt-image-2-codex), generated for this project; original authored meshes and clipped leaves. No third-party assets.",
-  "revision": "Copper Kettle dense Japanese-western fantasy spring market, grid-authoritative original 3D architecture",
+  "source": "Original stepped meshes and limited-palette motifs in tools/lane_pixels.py, worked with value relief from town_materials_generated.png. The crown lobes come from art/market/spring-verge-source.png via make_verge_sprites.py. Inn/workshop ornaments retain their original illustrations. All source paintings were generated for this project.",
+  "revision": "Bright handcrafted chunky fantasy town: cream limestone, caramel timber, airy blue slate, verdigris and select vermilion",
   "coordinates": "glTF Y-up; north -Z; metres; walkable paving top exactly 0; tile boundaries integer +/- .5",
   "grid": "assets/maps/town.grid, 21x15, (-10,-7) first cell; architecture only blocked/outside cells",
-  "atlas": "Original 4x4 single-slab street study, prefiltered to 64 texels per logical tile. Figure, marker and paving share integer centers; fine setts remain at the gutters. Other parts use the 16 authored material cells and architectural detail sheets.",
+  "atlas": "Sixteen 64px metre swatches of staggered limestone. The 64px slate, lime, stone and timber materials retain restrained relief; flower clusters are 32px and painted crown lobes are 80x74.",
   "textures": [
     {
       "material": "Lane_Paving",
@@ -16,133 +16,133 @@
       "material": "Lane_Slate",
       "source_tile": 1,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Plaster",
       "source_tile": 2,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Wood",
       "source_tile": 3,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Masonry",
       "source_tile": 4,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Crimson",
       "source_tile": 5,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Linen",
       "source_tile": 6,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Copper",
       "source_tile": 7,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Earth",
       "source_tile": 8,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Ivy",
       "source_tile": 9,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Stone",
       "source_tile": 10,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Pottery",
       "source_tile": 11,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Glass",
       "source_tile": 12,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Banner",
       "source_tile": 13,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Ceramic",
       "source_tile": 14,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Blossom",
       "source_tile": 15,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Leaves",
       "source_tile": 9,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_Petals",
       "source_tile": 15,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_BackstreetSetts",
       "source_tile": 0,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_WeatheredSlate",
       "source_tile": 1,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_CopperRoof",
       "source_tile": 7,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_WorkshopLime",
       "source_tile": 2,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_CanalMasonry",
       "source_tile": 4,
       "source_patch": null,
-      "pixels_per_metre": 256
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_InnSign",
@@ -151,7 +151,7 @@
         "inn_details_generated.png",
         0
       ],
-      "pixels_per_metre": 512
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_InnCabinet",
@@ -160,7 +160,7 @@
         "inn_details_generated.png",
         1
       ],
-      "pixels_per_metre": 512
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_InnLattice",
@@ -169,7 +169,7 @@
         "inn_details_generated.png",
         2
       ],
-      "pixels_per_metre": 512
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_InnPlanterRelief",
@@ -178,7 +178,7 @@
         "inn_details_generated.png",
         3
       ],
-      "pixels_per_metre": 512
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_WorkshopRack",
@@ -187,7 +187,7 @@
         "workshop_details_generated.png",
         0
       ],
-      "pixels_per_metre": 512
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_CarvedRelief",
@@ -196,7 +196,7 @@
         "workshop_details_generated.png",
         1
       ],
-      "pixels_per_metre": 512
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_ValveRelief",
@@ -205,7 +205,7 @@
         "workshop_details_generated.png",
         2
       ],
-      "pixels_per_metre": 512
+      "pixels_per_metre": 64
     },
     {
       "material": "Lane_WheelSign",
@@ -214,11 +214,38 @@
         "workshop_details_generated.png",
         3
       ],
-      "pixels_per_metre": 512
+      "pixels_per_metre": 64
+    },
+    {
+      "material": "Lane_CrownFresh",
+      "source": "art/market/verge-leaves.png",
+      "pixels": [
+        74,
+        80
+      ],
+      "alpha": "MASK .5; double sided"
+    },
+    {
+      "material": "Lane_CrownBlossom",
+      "source": "art/market/verge-blossoms.png",
+      "pixels": [
+        74,
+        80
+      ],
+      "alpha": "MASK .5; double sided"
+    },
+    {
+      "material": "Lane_FlowerCluster",
+      "source": "tools/lane_pixels.py",
+      "pixels": [
+        32,
+        32
+      ],
+      "alpha": "MASK .5; double sided"
     }
   ],
-  "roughness": "Per-material generated non-colour maps; cloth/plaster .96, slate .72, copper .42, window .22",
-  "normal_map": "Per-material tangent maps from generated detail, non-colour, glTF normalTexture",
+  "roughness": "Real non-colour roughness maps; cloth/plaster .96, slate .72, copper .42, iron .47, gold .36, window .22",
+  "normal_map": "Subtle authored-pixel tangent relief, non-colour; glTF normalTexture. Metals carry actual metallic factors.",
   "materials": [
     "Lane_Paving",
     "Lane_Slate",
@@ -257,7 +284,10 @@
     "Lane_WorkshopRack",
     "Lane_CarvedRelief",
     "Lane_ValveRelief",
-    "Lane_WheelSign"
+    "Lane_WheelSign",
+    "Lane_CrownFresh",
+    "Lane_CrownBlossom",
+    "Lane_FlowerCluster"
   ],
   "fruit_prefix": "ripe_plum_main_",
   "secondary_fruit_prefix": "ripe_plum_secondary_",
@@ -777,8 +807,22 @@
     "eye_level.png (deep gate)",
     "inn_detail.png (layered original storefront)"
   ],
-  "comparison": "Viewed captures/plum-morning-j8usqj35/40-morning-at-inn.png, original town.png and reference/visual/copper-square-study.webp. Replaced the meadow/isolated house with contiguous streetfronts, cut-window reveals, generated stone/slate/wood surface detail and striped real-3D market stalls. First rendered crop revealed missing street-facing west windows and excessive narrow FOV; corrected both and added inn-side and foreground stalls.",
-  "art_refinement": "Inn: original lattice, engraved name plaque, recessed stocked cabinet, two real dormers and covered oak gallery. Workshop: asymmetric green-slate silhouette, hooded repair bench, independent tool-rack/waterwheel sheet. East shop: low verdigris roof, real stone arcade and carved spandrels. North: 26m thick arched aqueduct, barrel-vault interior and shadowed iron sluice. Fountain: golden bolted valve cover, sleeves, stone-corner flower beds and garden tree shadow.",
-  "mesh_nodes": 76,
-  "triangles": 108968
+  "comparison": "Viewed actual reference/visual/copper-square-game.webp and all four distinct supplied Elin references. Kept the north-facing street, exact map/props/anchors, and replaced dark leaf noise, repeated slab floor and continuous thin roofs with original quiet pixel motifs, luminous tree cluster shells and deliberate stepped carpentry.",
+  "art_refinement": "Stepped slate roofs and ridge blocks; open verdigris gutters, downspouts and timber corbels; layered gate cornices and archivolt steps; cream stair nosings and descending cheek blocks; clipped pixel flower borders. Canonical tree crown/fruit nodes and material batching preserved.",
+  "foliage": {
+    "method": "Nine original painted lobes per tree, each two crossed upright cutouts and a horizontal cap; 27 quads per crown. Separate six-sided stems and geometric fruit. Alpha-mask .5, double-sided, real depth and shadows.",
+    "materials": [
+      "Lane_CrownFresh",
+      "Lane_CrownBlossom",
+      "Lane_FlowerCluster"
+    ],
+    "sprite_nodes": [
+      "canopy_main",
+      "canopy_secondary",
+      "TownSprite_FlowerBorders"
+    ],
+    "source": "art/market/spring-verge-source.png, tools/make_verge_sprites.py and tools/lane_pixels.py"
+  },
+  "mesh_nodes": 77,
+  "triangles": 132648
 }

@@ -16,7 +16,7 @@ pub const JELLY_START: IVec2 = IVec2::new(4, -2);
 const W: usize = map::WIDTH;
 const H: usize = map::HEIGHT;
 const CELLS: usize = W * H;
-const DIRS: [IVec2; 4] = [IVec2::X, IVec2::NEG_Y, IVec2::Y, IVec2::NEG_X];
+use crate::map::DIRS;
 
 pub fn ground(p: IVec2) -> Vec3 {
     Vec3::new(p.x as f32, 0., p.y as f32)
@@ -25,7 +25,7 @@ pub fn on_map(p: IVec2) -> bool {
     map::inside(p)
 }
 pub fn distance(a: IVec2, b: IVec2) -> u32 {
-    a.x.abs_diff(b.x) + a.y.abs_diff(b.y)
+    map::distance(a, b)
 }
 fn cell(p: IVec2) -> usize {
     map::cell_index(p)
@@ -41,7 +41,7 @@ impl Routes {
     fn from(origin: IVec2, area: Area, blocked: impl Fn(IVec2) -> bool) -> Self {
         let mut r = Self {
             dist: [u16::MAX; CELLS],
-            first: [4; CELLS],
+            first: [DIRS.len() as u8; CELLS],
             previous: [usize::MAX; CELLS],
         };
         if !on_map(origin) {
@@ -57,7 +57,7 @@ impl Routes {
             let i = cell(p);
             for (d, delta) in DIRS.into_iter().enumerate() {
                 let n = p + delta;
-                if !map::passable(area, n) || blocked(n) {
+                if !map::passage(p, n, |p| map::passable(area, p) && !blocked(p)) {
                     continue;
                 }
                 let j = cell(n);
@@ -281,19 +281,23 @@ impl Outing {
             Here::None
         }
     }
+    fn can_reach_from(&self, from: IVec2, to: IVec2) -> bool {
+        map::reach(from, to, |p| self.walkable(p) && !self.blocked(p))
+    }
+    fn fountain_reach_from(&self, from: IVec2) -> bool {
+        DIRS.iter().any(|d| {
+            let p = from + *d;
+            matches!(map::glyph(self.area, p), b'f' | b'F') && self.can_reach_from(from, p)
+        })
+    }
     fn nearby(&self) -> Here {
-        [
-            self.player,
-            self.player + self.facing,
-            self.player + IVec2::NEG_Y,
-            self.player + IVec2::X,
-            self.player + IVec2::Y,
-            self.player + IVec2::NEG_X,
-        ]
-        .into_iter()
-        .map(|p| self.there(p))
-        .find(|h| *h != Here::None)
-        .unwrap_or(Here::None)
+        std::iter::once(self.player)
+            .chain(std::iter::once(self.player + self.facing))
+            .chain(DIRS.into_iter().map(|d| self.player + d))
+            .filter(|&p| self.can_reach_from(self.player, p))
+            .map(|p| self.there(p))
+            .find(|h| *h != Here::None)
+            .unwrap_or(Here::None)
     }
     pub fn prompt(&self) -> &'static str {
         match self.nearby() {
@@ -404,6 +408,10 @@ impl Outing {
             && (1..=3).contains(&distance(self.player, p))
             && p != self.jelly
             && !self.fruit.contains(&p)
+            && map::clear_line(self.player, p, |at| {
+                // A lob clears the deliberately low orchard wall, not buildings or trees.
+                (self.walkable(at) || (at.x == 2 && (-3..=0).contains(&at.y))) && !self.blocked(at)
+            })
     }
     fn blocked(&self, p: IVec2) -> bool {
         if self.area == Area::Town {
@@ -435,7 +443,7 @@ impl Outing {
         if !on_map(dest) {
             return None;
         }
-        if self.walkable(dest) && !self.blocked(dest) {
+        if !self.is_interactable(dest) && self.walkable(dest) && !self.blocked(dest) {
             return Some(dest);
         }
         if !self.is_interactable(dest) {
@@ -450,10 +458,9 @@ impl Outing {
             for x in map::MIN.x..=map::MAX.x {
                 let p = IVec2::new(x, y);
                 let adjacent = if fountain {
-                    DIRS.iter()
-                        .any(|d| matches!(map::glyph(self.area, p + *d), b'f' | b'F'))
+                    self.fountain_reach_from(p)
                 } else {
-                    distance(p, dest) == 1
+                    self.can_reach_from(p, dest)
                 };
                 if adjacent && self.walkable(p) && !self.blocked(p) && r.dist[cell(p)] < score {
                     score = r.dist[cell(p)];
@@ -541,6 +548,10 @@ impl Outing {
         }
         self.facing = d;
         let p = self.player + d;
+        if !self.can_reach_from(self.player, p) {
+            self.notice = "墙角或身旁的身影挡住去路，得从旁边绕。";
+            return;
+        }
         if self.area == Area::Cistern {
             if let Some(i) = self.expedition.enemy_at(p) {
                 self.expedition.target_hit = None;
@@ -751,7 +762,12 @@ impl Outing {
                     "这一下打中了。下次见脚下红格，移开或架盾。"
                 };
         } else if guarded {
-            self.notice = "稳稳挡下锁定攻击，邻身敌人吃到反击。圆盾反击2伤；F技艺已重新就绪。";
+            self.notice = match (self.expedition.target_hit.is_some(), self.expedition.kit) {
+                (true, Kit::Buckler) => "盾沿撞回了近处的对手：反击 2。盾击已就绪。",
+                (true, Kit::Hook) => "你拨开来势，近身回击 1。钩索已可再用。",
+                (true, Kit::None) => "你挡下这一击，趁对手贴身还了一下：反击 1。",
+                (false, _) => "你护住脸和胸口，挡下了远处的一击。",
+            };
         } else if kind == ActionKind::Step {
             self.notice = if self.danger_at(self.player) {
                 "脚下出现预兆：下一次行动会命中这里。移开一格；敌击可Q，喷气必须躲开。"
@@ -795,11 +811,13 @@ impl Outing {
         let mut target = None;
         for range in 1..=reach {
             let p = self.player + self.facing * range;
-            if let Some(i) = self.expedition.enemy_at(p) {
-                target = Some((i, range));
+            if !map::passage(p - self.facing, p, |at| {
+                self.walkable(at) && (at == p || !self.blocked(at))
+            }) {
                 break;
             }
-            if !self.walkable(p) {
+            if let Some(i) = self.expedition.enemy_at(p) {
+                target = Some((i, range));
                 break;
             }
         }
@@ -1000,11 +1018,9 @@ impl Outing {
     }
     pub fn adjacent_object(&self, p: IVec2) -> bool {
         if self.area == Area::Town && matches!(map::glyph(self.area, p), b'f' | b'F') {
-            return DIRS
-                .iter()
-                .any(|d| matches!(map::glyph(self.area, self.player + *d), b'f' | b'F'));
+            return self.fountain_reach_from(self.player);
         }
-        distance(self.player, p) <= 1 && self.there(p) != Here::None
+        self.can_reach_from(self.player, p) && self.there(p) != Here::None
     }
 }
 
@@ -1156,6 +1172,154 @@ impl JournalFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cistern_with_enemy(player: IVec2, enemy: IVec2) -> Outing {
+        let mut g = Outing::new(vec![]);
+        g.area = Area::Cistern;
+        g.player = player;
+        g.expedition.begin(1);
+        g.expedition.enemies.truncate(1);
+        g.expedition.enemies[0].pos = enemy;
+        g
+    }
+
+    #[test]
+    fn diagonal_is_one_step_and_one_turn_and_rejects_large_vectors() {
+        let mut g = Outing::new(vec![]);
+        let mut ui = Interface::default();
+        let from = IVec2::new(-2, 0);
+        g.player = from;
+        let d = IVec2::new(1, -1);
+        g.act(&mut ui, Intent::Dir(d));
+        assert_eq!((g.player, g.facing, g.turn), (from + d, d, 1));
+        g.act(&mut ui, Intent::Dir(d * 2));
+        assert_eq!((g.player, g.turn), (from + d, 1));
+    }
+
+    #[test]
+    fn preview_and_click_stop_at_the_nearest_legal_interaction_stand() {
+        let mut g = Outing::new(vec![]);
+        g.player = IVec2::new(-2, 0);
+        g.fruit.clear();
+        let target = IVec2::new(0, -2);
+        g.fruit.push(target);
+        let mut path = Vec::new();
+        assert!(g.path_to(target, &mut path));
+        assert_eq!(path, [IVec2::new(-1, -1)]);
+        let mut ui = Interface::default();
+        for p in path {
+            g.act(&mut ui, Intent::Dir(p - g.player));
+        }
+        assert!(g.adjacent_object(target));
+        g.act(&mut ui, Intent::Point(target));
+        assert_eq!((g.player, g.turn, g.plums), (IVec2::new(-1, -1), 2, 1));
+    }
+
+    #[test]
+    fn routes_detour_around_wall_corners_and_actor_shoulders() {
+        let mut g = Outing::new(vec![]);
+        g.player = IVec2::new(1, 0);
+        let target = IVec2::new(2, 1);
+        let mut path = Vec::new();
+        assert!(g.path_to(target, &mut path));
+        assert_eq!(path.len(), 2);
+        assert_ne!(path[0], target);
+        let mut from = g.player;
+        for &to in &path {
+            assert!(map::passage(from, to, |p| g.walkable(p) && !g.blocked(p)));
+            from = to;
+        }
+        g.player = IVec2::new(-2, 0);
+        g.jelly = IVec2::new(-1, 0);
+        g.act(&mut Interface::default(), Intent::Dir(IVec2::new(1, -1)));
+        assert_eq!((g.player, g.turn), (IVec2::new(-2, 0), 0));
+        assert!(g.path_to(IVec2::new(-1, -1), &mut path));
+        assert_eq!(path.len(), 2);
+    }
+
+    #[test]
+    fn diagonal_melee_and_hook_cannot_cross_a_wall_corner() {
+        // (3,-3) is the blocked shoulder, although both actors stand on dry floor.
+        let mut g = cistern_with_enemy(IVec2::new(2, -3), IVec2::new(3, -2));
+        let mut ui = Interface::default();
+        let hp = g.expedition.enemies[0].hp;
+        g.act(&mut ui, Intent::Dir(IVec2::new(1, 1)));
+        g.act(&mut ui, Intent::Point(IVec2::new(3, -2)));
+        assert_eq!((g.turn, g.expedition.enemies[0].hp), (0, hp));
+        assert!(!g.adjacent_object(IVec2::new(3, -2)));
+        g.expedition.kit = Kit::Hook;
+        g.act(&mut ui, Intent::Skill);
+        assert_eq!((g.turn, g.expedition.enemies[0].hp), (0, hp));
+    }
+
+    #[test]
+    fn diagonal_melee_and_two_cell_hook_each_commit_one_combat_beat() {
+        let mut g = cistern_with_enemy(IVec2::new(0, -2), IVec2::new(1, -1));
+        let mut ui = Interface::default();
+        g.act(&mut ui, Intent::Point(IVec2::new(1, -1)));
+        assert_eq!(
+            (g.turn, g.expedition.beat, g.expedition.enemies[0].hp),
+            (1, 1, 2)
+        );
+        assert_eq!(g.player, IVec2::new(0, -2));
+        g.expedition.enemies[0].pos = IVec2::new(2, 0);
+        g.expedition.enemies[0].hp = 3;
+        g.expedition.kit = Kit::Hook;
+        g.facing = IVec2::new(1, 1);
+        g.act(&mut ui, Intent::Skill);
+        assert_eq!((g.turn, g.expedition.beat), (2, 2));
+        assert_eq!(
+            (g.expedition.enemies[0].pos, g.expedition.enemies[0].hp),
+            (IVec2::new(1, -1), 1)
+        );
+    }
+
+    #[test]
+    fn wall_corner_blocks_object_reach_and_high_obstacles_block_lobs() {
+        let mut g = Outing::new(vec![]);
+        g.player = IVec2::new(1, 0);
+        let fruit = IVec2::new(2, 1);
+        g.fruit.push(fruit);
+        assert!(!g.adjacent_object(fruit));
+        let mut ui = Interface::default();
+        g.act(&mut ui, Intent::Point(fruit));
+        assert_eq!((g.turn, g.plums), (0, 0));
+        g.player = IVec2::new(2, 2);
+        g.plums = 1;
+        assert!(!g.can_toss(IVec2::new(6, 2)));
+        assert!(!g.can_toss(IVec2::new(5, 0)));
+        g.player = IVec2::new(0, 0);
+        assert!(g.can_toss(IVec2::new(-3, -3)));
+    }
+
+    #[test]
+    fn actor_shoulders_block_melee_hook_and_fountain_corner_reach() {
+        let mut g = cistern_with_enemy(IVec2::new(0, -2), IVec2::new(2, 0));
+        g.expedition.begin(1);
+        g.expedition.enemies.truncate(2);
+        g.expedition.enemies[0].pos = IVec2::new(2, 0);
+        g.expedition.enemies[1].pos = IVec2::new(1, -2);
+        g.facing = IVec2::new(1, 1);
+        g.expedition.kit = Kit::Hook;
+        let hp = g.expedition.enemies[0].hp;
+        let mut ui = Interface::default();
+        g.act(&mut ui, Intent::Skill);
+        assert_eq!((g.turn, g.expedition.enemies[0].hp), (0, hp));
+        g.expedition.enemies[0].pos = IVec2::new(1, -1);
+        g.act(&mut ui, Intent::Point(IVec2::new(1, -1)));
+        assert_eq!((g.turn, g.expedition.enemies[0].hp), (0, hp));
+
+        let mut g = Outing::new(vec![]);
+        g.player = IVec2::new(6, 0);
+        assert!(g.adjacent_object(map::FOUNTAIN));
+        let mut route = Vec::new();
+        assert!(g.path_to(map::FOUNTAIN, &mut route));
+        assert!(route.is_empty());
+        g.jelly = IVec2::new(5, 0);
+        assert!(!g.adjacent_object(map::FOUNTAIN));
+        assert!(g.path_to(map::FOUNTAIN, &mut route));
+        assert!(!route.is_empty());
+    }
     #[test]
     fn a_plum_only_changes_hands_for_a_bottle_that_fits() {
         let mut g = Outing::new(vec![]);

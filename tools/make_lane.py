@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Copper Kettle: authored 3D market streets, Blender 4.5, north is game -Z.
 Run blender-4.5 --background --python tools/make_lane.py.
-Original generated material sheet + original meshes; no third-party art.
+Original authored pixel surfaces + original meshes; no third-party art.
 The grid is geometry's authority. All walkable surfaces have top height zero.
 """
 import bpy, bmesh, math, random, json, struct
 import numpy as np
 from pathlib import Path
 from mathutils import Vector
+import sys
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+from lane_pixels import surface, worked_material, flower, maps, linear
 
 ROOT=Path(__file__).resolve().parents[1]
 ART=ROOT/'art/lane'; OUT=ROOT/'assets/lanes'
@@ -22,61 +26,49 @@ def glyph(x,z):
  return grid[z+7][x+10] if -10<=x<=10 and -7<=z<=7 else '#'
 def cv(p):return (p[0],-p[2],p[1])
 
-# The generated sheet is a real UV material source, never a concept-plane.
-# Each source square is extracted to an independently repeatable 256px map.
-sheet=bpy.data.images.load(str(ART/'town_materials_generated.png'),check_existing=False)
-pixels=np.asarray(sheet.pixels[:],dtype=np.float32).reshape(1024,1024,4)
 M={}; SOURCE=[]
+master=bpy.data.images.load(str(ART/'town_materials_generated.png'))
+mw,mh=master.size[:]
+# Store the authored swatches in their natural four-by-four layout, in linear
+# colour. Four samples per axis give one reference value per 64px brush texel.
+studies=np.asarray(master.pixels[:],dtype=np.float32).reshape(mh,mw,4).reshape(4,64,4,4,64,4,4).mean(axis=(2,5))
 def image(name,data,linear=False):
  h,w=data.shape[:2]; im=bpy.data.images.new(name,width=w,height=h,alpha=True)
  if linear: im.colorspace_settings.name='Non-Color'
  im.pixels.foreach_set(np.ascontiguousarray(data,dtype=np.float32).ravel())
  im.filepath_raw=str(ART/(name+'.png'));im.file_format='PNG';im.save()
  return im
-def material(name,tile=None,colour=None,rough=.86,metal=0,emission=0,alpha=False,patch=None,tint=(1,1,1)):
+def material(name,tile=None,colour=None,rough=.86,metal=0,emission=0,alpha=False,patch=None):
  m=bpy.data.materials.new('Lane_'+name);m.use_nodes=True
  nodes=m.node_tree.nodes;links=m.node_tree.links
  p=next(n for n in nodes if n.type=='BSDF_PRINCIPLED');p.inputs['Roughness'].default_value=rough
  p.inputs['Metallic'].default_value=metal
- if name=='Paving':
-  # The plaza uses one flagstone per actual playable square. Prefilter in
-  # linear colour before baking; a near-axis camera can otherwise alias chips
-  # and hairline cracks into a noisy checkerboard.
-  stone_src=bpy.data.images.load(str(ART/'town-single-flags-source.png'),check_existing=False)
-  sw,sh=stone_src.size[:]
-  src=np.asarray(stone_src.pixels[:],dtype=np.float32).reshape(sh,sw,4)
-  bx=np.linspace(0,sw,257).astype(int);by=np.linspace(0,sh,257).astype(int)
-  flags=np.add.reduceat(np.add.reduceat(src,by[:-1],axis=0),bx[:-1],axis=1)
-  flags/=np.diff(by)[:,None,None]*np.diff(bx)[None,:,None]
  if tile is not None or patch is not None:
-  if name=='Paving':data=flags
-  elif patch is not None:
+  if patch is not None:
    source=bpy.data.images.load(str(ART/patch[0]),check_existing=False)
    src=np.asarray(source.pixels[:],dtype=np.float32).reshape(1024,1024,4)
-   row,col=divmod(patch[1],2);data=src[(1-row)*512:(2-row)*512,col*512:(col+1)*512].copy()
+   row,col=divmod(patch[1],2)
+   # Retain the original architectural illustration in a quiet 64px vocabulary.
+   crop=src[(1-row)*512:(2-row)*512,col*512:(col+1)*512]
+   data=crop.reshape(64,8,64,8,4).mean(axis=(1,3))
+   data[:,:,:3]=np.round(data[:,:,:3]*20)/20
   else:
-   row,col=divmod(tile,4);data=pixels[(3-row)*256:(4-row)*256,col*256:(col+1)*256].copy()
-  data[:,:,:3]*=np.asarray(tint,dtype=np.float32)
-  if name=='Paving':
-   # Grey freestone takes its warmth from the late sun; reserve red terracotta for roofs.
-   luma=data[:,:,:3]@np.asarray((.2126,.7152,.0722),dtype=np.float32)
-   data[:,:,:3]=data[:,:,:3]*.34+luma[:,:,None]*np.asarray((1.04,1.025,.99),dtype=np.float32)*.66
-  if alpha:
-   yy,xx=np.mgrid[0:256,0:256];u=(xx-128)/128;v=(yy-128)/128
-   # Leaf-shaped cutouts, with real generated ivy veins inside each leaf.
+   data=surface(name)
+   if name in ('Paving','Slate','WeatheredSlate','CopperRoof','Wood','Plaster','WorkshopLime','Masonry','CanalMasonry','Stone'):
+    study_tile=1 if name in ('Slate','WeatheredSlate','CopperRoof') else tile
+    row,col=divmod(study_tile,4)
+    data=worked_material(name,data,studies[3-row,:,col,:,:])
+  if alpha and name not in ('Leaves','Petals'):
+   h,w=data.shape[:2];yy,xx=np.mgrid[0:h,0:w];u=(xx-w/2)/(w/2);v=(yy-h/2)/(h/2)
    data[:,:,3]=((abs(u)*.78+abs(v)<.94)&((u*u+v*v)<.86)).astype(np.float32)
   im=image('town_'+name.lower(),data);tx=nodes.new('ShaderNodeTexImage');tx.image=im
   tx.interpolation='Closest';links.new(tx.outputs['Color'],p.inputs['Base Color'])
-  lum=data[:,:,:3].mean(axis=2);dy,dx=np.gradient(lum)
-  nn=np.stack((-dx*3.2,-dy*3.2,np.ones_like(dx)),axis=-1)
-  nn/=np.linalg.norm(nn,axis=2,keepdims=True)
-  norm=np.ones_like(data);norm[:,:,:3]=nn*.5+.5
+  norm,rd=maps(data,rough)
   nt=nodes.new('ShaderNodeTexImage');nt.image=image('town_'+name.lower()+'_normal',norm,True)
-  nt.interpolation='Closest';nm=nodes.new('ShaderNodeNormalMap');nm.inputs['Strength'].default_value=.45
+  nt.interpolation='Closest';nm=nodes.new('ShaderNodeNormalMap');nm.inputs['Strength'].default_value=.35
   links.new(nt.outputs['Color'],nm.inputs['Color']);links.new(nm.outputs['Normal'],p.inputs['Normal'])
-  rd=np.ones_like(data);rd[:,:,:3]=np.clip(rough+(lum-lum.mean())*.18,.1,1)[:,:,None]
   rt=nodes.new('ShaderNodeTexImage');rt.image=image('town_'+name.lower()+'_roughness',rd,True)
-  links.new(rt.outputs['Color'],p.inputs['Roughness'])
+  rt.interpolation='Closest';links.new(rt.outputs['Color'],p.inputs['Roughness'])
   if alpha:
    links.new(tx.outputs['Alpha'],p.inputs['Alpha']);m.surface_render_method='DITHERED'
    m.use_backface_culling=False
@@ -96,18 +88,18 @@ for args in [
  name,tile,rough,metal=args;material(name,tile,rough=rough,metal=metal,emission=.75 if name=='Glass' else 0)
 material('Leaves',9,rough=.89,alpha=True)
 material('Petals',15,rough=.9,alpha=True)
-material('Mortar',colour=(.075,.079,.061))
+material('Mortar',colour=tuple(linear('87958d')))
 material('BackstreetSetts',0,rough=.91)
-material('Iron',colour=(.064,.07,.068),rough=.53,metal=.8)
-material('Plum',colour=(.24,.055,.19),rough=.4)
-material('Unripe',colour=(.23,.34,.08),rough=.48)
-material('Apple',colour=(.55,.16,.055),rough=.49)
-material('Gold',colour=(.72,.48,.10),rough=.6)
-material('Flower',colour=(.96,.65,.25),rough=.9)
-material('WeatheredSlate',1,rough=.88,tint=(.68,.85,.64))
-material('CopperRoof',7,rough=.68,metal=.35,tint=(.56,.75,.64))
-material('WorkshopLime',2,rough=.97,tint=(.65,.73,.61))
-material('CanalMasonry',4,rough=.95,tint=(.54,.60,.57))
+material('Iron',colour=tuple(linear('55777a')),rough=.47,metal=.78)
+material('Plum',colour=tuple(linear('995187')),rough=.34)
+material('Unripe',colour=tuple(linear('a0ba63')),rough=.48)
+material('Apple',colour=tuple(linear('da6c4e')),rough=.49)
+material('Gold',colour=tuple(linear('eac781')),rough=.36,metal=.7)
+material('Flower',colour=tuple(linear('ffd78b')),rough=.9)
+material('WeatheredSlate',1,rough=.78)
+material('CopperRoof',7,rough=.56,metal=.42)
+material('WorkshopLime',2,rough=.97)
+material('CanalMasonry',4,rough=.95)
 material('InnSign',patch=('inn_details_generated.png',0),rough=.76)
 material('InnCabinet',patch=('inn_details_generated.png',1),rough=.88)
 material('InnLattice',patch=('inn_details_generated.png',2),rough=.44,emission=.16)
@@ -116,6 +108,26 @@ material('WorkshopRack',patch=('workshop_details_generated.png',0),rough=.72)
 material('CarvedRelief',patch=('workshop_details_generated.png',1),rough=.94)
 material('ValveRelief',patch=('workshop_details_generated.png',2),rough=.44,metal=.55)
 material('WheelSign',patch=('workshop_details_generated.png',3),rough=.79)
+def sprite_material(name,data,rough=.83,source='tools/lane_pixels.py'):
+ m=material(name,colour=(1,1,1),rough=rough)
+ nodes=m.node_tree.nodes;links=m.node_tree.links;p=next(n for n in nodes if n.type=='BSDF_PRINCIPLED')
+ tx=nodes.new('ShaderNodeTexImage');tx.image=image('town_'+name.lower(),data);tx.interpolation='Closest'
+ links.new(tx.outputs['Color'],p.inputs['Base Color']);links.new(tx.outputs['Alpha'],p.inputs['Alpha'])
+ normal,rd=maps(data,rough)
+ for suffix,pixels,socket in [('normal',normal,'Normal'),('roughness',rd,'Roughness')]:
+  node=nodes.new('ShaderNodeTexImage');node.image=image('town_'+name.lower()+'_'+suffix,pixels,True);node.interpolation='Closest'
+  if suffix=='normal':
+   nm=nodes.new('ShaderNodeNormalMap');nm.inputs['Strength'].default_value=.25
+   links.new(node.outputs['Color'],nm.inputs['Color']);links.new(nm.outputs['Normal'],p.inputs[socket])
+  else:links.new(node.outputs['Color'],p.inputs[socket])
+ m.surface_render_method='DITHERED';m.use_backface_culling=False
+ SOURCE.append({'material':m.name,'source':source,'pixels':list(data.shape[:2]),'alpha':'MASK .5; double sided'})
+ return m
+for name,path in [('CrownFresh','verge-leaves.png'),('CrownBlossom','verge-blossoms.png')]:
+ original=bpy.data.images.load(str(ROOT/'art/market'/path),check_existing=False)
+ w,h=original.size[:]
+ sprite_material(name,np.asarray(original.pixels[:],dtype=np.float32).reshape(h,w,4),source='art/market/'+path)
+sprite_material('FlowerCluster',flower())
 
 class Mesh:
  def __init__(self,name,mat,origin=(0,0,0)):
@@ -164,6 +176,11 @@ def leaf(mesh,p,size,angle,tilt=0):
  p=Vector(p);u=Vector((math.cos(angle),tilt,math.sin(angle))).normalized()*size
  v=Vector((-math.sin(angle)*.7,.72,math.cos(angle)*.7)).normalized()*size
  mesh.face([p-u-v,p+u-v,p+u+v,p-u+v],[(0,0),(1,0),(1,1),(0,1)])
+def cluster_card(mesh,c,w,h,yaw=0,tilt=0):
+ # Crossed walls and horizontal caps cover north-facing high/eye views.
+ c=Vector(c);u=Vector((math.cos(yaw),0,math.sin(yaw)))*w*.5
+ v=Vector((-math.sin(yaw)*math.sin(tilt),math.cos(tilt),math.cos(yaw)*math.sin(tilt)))*h*.5
+ mesh.face([c-u-v,c+u-v,c+u+v,c-u+v],[(0,0),(1,0),(1,1),(0,1)])
 
 # Level cobbled carpet, precise cell joints. Even the apron is town, not meadow.
 ground=Mesh('Lane_Ground','Paving');earth=Mesh('Planted_Verges','Earth');mortar=Mesh('Town_Mortar','Mortar')
@@ -207,6 +224,7 @@ trim.finish()
 wood=Mesh('Market_TimberDetails','Wood');stone=Mesh('Town_WeatheredTrim','Stone')
 iron=Mesh('Market_Iron','Iron');pots=Mesh('Market_Pottery','Pottery')
 ivy=Mesh('Facade_Ivy','Leaves');flowers=Mesh('Flowerbox_Blossoms','Flower')
+flower_sprites=Mesh('TownSprite_FlowerBorders','FlowerCluster')
 red=Mesh('Awning_Crimson','Crimson');linen=Mesh('Awning_Linen','Linen')
 goods=Mesh('Market_Produce','Apple');copper=Mesh('Market_Copper','Copper')
 lamps=[]
@@ -217,6 +235,8 @@ def flowerbox(x,y,z,w):
   xx=x+R.uniform(-w*.46,w*.46)
   leaf(ivy,(xx,y+.15,z),.13,R.random()*math.tau)
   if i%2==0:flowers.beam((xx,y+.18,z+.04),(xx,y+.24,z+.04),.034,.05,6)
+ for j in range(max(1,int(w/.35))):
+  cluster_card(flower_sprites,(x-w*.33+j*.32,y+.26,z+.04),.35,.40,tilt=.20)
 def lantern(x,y,z):
  wood.beam((x,y+.25,z-.15),(x,y+.25,z+.2),.025)
  iron.beam((x,y+.25,z+.18),(x,y+.03,z+.18),.014)
@@ -313,15 +333,27 @@ def house(tag,x,z,w,d,h=3.2):
  pl.face([(right,h,north),(left,h,north),(ridge,peak,north)])
  wood.beam((x,h,south+.04),(ridge,peak,south+.04),.065,n=4)
  for side in [-1,1]:
-  eave=x+side*(w*.5+.13)
-  roofpts=[(ridge,peak+.06,north-.12),(eave,h+.02,north-.12),(eave,h+.02,south+.12),(ridge,peak+.06,south+.12)]
-  roof.face(roofpts if side<0 else list(reversed(roofpts)))
-  # Slate courses have real lipped edges, not just a coloured roof triangle.
-  for j in range(1,max(3,int(w*2.5))):
-   t=j/max(3,int(w*2.5));xx=ridge+(eave-ridge)*t;yy=peak+.06+(h-peak)*t
-   roof.face([(xx,yy,north-.12),(xx,yy-.034,north-.12),(xx,yy-.034,south+.12),(xx,yy,south+.12)])
-  for zz in [north-.14,south+.14]:wood.beam((ridge,peak+.07,zz),(eave,h,zz),.055,n=6)
- wood.beam((ridge,peak+.10,north-.18),(ridge,peak+.10,south+.18),.065,n=8)
+  eave=x+side*(w*.5+.13);courses=max(5,round(abs(eave-ridge)/.24))
+  for j in range(courses):
+   t=(j+.5)/courses;xx=ridge+(eave-ridge)*t
+   yy=peak+.06+(h-peak)*(j/courses)
+   roof.box((xx,yy-.065,z),(abs(eave-ridge)/courses+.016,.13,d+.28))
+  # Projecting copper gutters have an open trough, downspouts and block corbels.
+  copper.box((eave,h-.07,z),(.19,.065,d+.34))
+  copper.box((eave+side*.085,h-.015,z),(.035,.14,d+.34))
+  wood.box((eave-side*.04,h-.15,z),(.15,.16,d+.26))
+  for zz in np.arange(north+.15,south,.55):
+   for step in range(3):
+    wood.box((eave-side*(.06+step*.065),h-.26-step*.065,zz),(.16,.10,.12))
+  for zz in [north-.18,south+.18]:
+   for j in range(courses):
+    xx=ridge+(eave-ridge)*(j+.5)/courses;yy=peak+.02+(h-peak)*(j/courses)
+    wood.box((xx,yy-.12,zz),(abs(eave-ridge)/courses+.025,.13,.10))
+ for zz in np.arange(north-.18,south+.18,.36):
+  roof.box((ridge,peak+.12,min(zz+.17,south+.12)),(.30,.20,.35))
+ for xx,side in [(left,-1),(right,1)]:
+  copper.box((xx+side*.10,h*.47,north+.13),(.085,h*.90,.085))
+  copper.box((xx+side*.06,.10,north+.13),(.19,.15,.14))
  for yy in [.1,.31]:
   for j in range(max(2,int(w/.35))):stone.stone((left+.18+j*.35,yy,south+.02),(.34,.20,.13))
  # Deliberately sparse facade lights; small orange panes, not an emissive wall.
@@ -390,8 +422,9 @@ for xx in [-7.78,-6.32]:
  dormer.box((xx,3.72,1.31),(.64,.61,.54))
  panel('Inn_Dormer_Lattice','InnLattice',xx,3.74,1.589,.53,.51)
  for side in [-1,1]:
-  pp=[(xx,4.29,.94),(xx+side*.40,3.99,.94),(xx+side*.40,3.99,1.70),(xx,4.29,1.70)]
-  dr.face(pp if side<0 else list(reversed(pp)))
+  for j in range(4):
+   dr.box((xx+side*(j+.5)*.10,4.25-j*.075,1.32),(.11,.10,.79))
+  copper.box((xx+side*.40,3.99,1.32),(.12,.08,.81))
  dormer.finish();dr.finish()
 for xx in [-7.834,-6.266]:
  panel('Inn_CarvedLattice','InnLattice',xx,1.85,1.50,.57,.80)
@@ -405,7 +438,10 @@ for xx in [-5.72,-5.23]:iron.beam((xx,2.96,1.95),(xx,2.84,1.95),.014)
 # Northwest repair shop: a low asymmetric green-grey roof, a deep work hood and
 # individual hung tools above the bench. The traverseable g row at z=-2 stays clear.
 workroof=Mesh('Workshop_LeanToRoof','WeatheredSlate')
-workroof.face([(-8.42,2.33,-2.58),(-4.78,2.33,-2.58),(-4.78,2.87,-3.10),(-8.42,2.87,-3.10)])
+for j in range(5):
+ workroof.box((-6.60,2.36+j*.108,-2.58-(j+.5)*.104),(3.64,.11,.114))
+wood.box((-6.60,2.24,-2.56),(3.72,.12,.13))
+copper.box((-6.60,2.30,-2.50),(3.78,.075,.14))
 workroof.finish()
 for xx in [-8.3,-4.9]:wood.box((xx,1.15,-2.67),(.075,2.30,.075))
 shelf(-7.54,1.02,-3.005,.96,'WorkshopRack')
@@ -474,12 +510,25 @@ for x in [-3.1,3.1]:
  for row in range(10):
   for col in range(3):stone.stone((x-.57+col*.55,.15+row*.30,-6.27),(.53,.285,.18))
  for j in range(4):stone.box((x-.65+j*.43,3.28,-6.94),(.28,.38,1.28))
+ for yy,ww,dd in [(3.10,1.92,1.34),(3.24,2.08,1.48),(3.36,1.94,1.38)]:
+  stone.box((x,yy,-6.95),(ww,.13,dd))
+ for side in [-1,1]:
+  stone.box((x+side*.67,1.50,-6.25),(.21,2.90,.20))
+  for j in range(4):
+   stone.box((x+side*.65,.12+j*.16,-6.20),(.30+j*.045,.13,.31+j*.045))
 radius=2.22
 for i in range(15):
  a=i*math.pi/15;b=(i+1)*math.pi/15
  # Radial arch starts at y1.6, passage clearance max 3.82.
  pts=[(r*math.cos(t),1.6+r*math.sin(t),z) for z in [-7.55,-6.35] for r,t in [(radius,a),(radius,b),(radius+.42,b),(radius+.42,a)]]
  for ids in [(0,1,2,3),(7,6,5,4),(0,4,5,1),(1,5,6,2),(2,6,7,3),(3,7,4,0)]:gate.face([pts[j] for j in ids])
+# Stepped archivolt and central keystone are a single course, not repeated
+# per voussoir. They leave the original 4m passage entirely open.
+for side in [-1,1]:
+ for j in range(5):
+  xx=side*(1.7-j*.30);yy=1.6+math.sqrt(max(0,2.64**2-xx**2))
+  stone.box((xx,yy,-6.27),(.34,.18,.24))
+stone.box((0,4.12,-6.20),(.42,.49,.32))
 gate.finish()
 # Repaired shallow stair landing: flat tread tops keep logical feet at y=0.
 # The water gate grows out of a real, thick, arched stone aqueduct, not a frame.
@@ -518,11 +567,15 @@ for xx in [-1.7,-1.1,-.55,0,.55,1.1,1.7]:iron.box((xx,1.47,-10.89),(.055,2.94,.0
 for i in range(7):
  z=-4.5-(i+.5)*2/7
  stone.box((0,-.05,z),(3.0,.10,.25))
+ stone.box((0,-.012,z+.105),(2.98,.024,.040))
  if z<-5.55:
   for x in [-3.1,2.15]:stone.stone((x,.08,z),(.35,.16,.274))
 # Past the walkable map edge the stairs descend physically into the cistern.
 for i in range(12):
  stone.box((0,-.1*(i+1)-.05,-6.5-(i+.5)/3),(3.0,.10,.32))
+ stone.box((0,-.1*(i+1)-.035,-6.5-i/3),(3.03,.065,.055))
+ for xx in [-1.67,1.67]:
+  stone.box((xx,.26-.1*i,-6.5-(i+.5)/3),(.28,.42,.32))
 stone.box((0,-1.25,-10.72),(3.0,.10,.48))
 for x in [-3.1,3.1]:
  banner=Mesh('Gate_Banner_'+str(x),'Banner')
@@ -551,6 +604,8 @@ for i in range(13):
  xx=4+math.cos(a)*1.29;zz=2+math.sin(a)*1.29
  for j in range(3):leaf(ivy,(xx,.27+j*.045,zz),.11,R.random()*math.tau)
  flowers.beam((xx,.36,zz),(xx,.43,zz),.035,.045,n=6)
+ cluster_card(flower_sprites,(xx,.43,zz),.33,.37,tilt=.24)
+ cluster_card(flower_sprites,(xx,.42,zz),.31,.35,yaw=math.pi/2,tilt=.30)
 fount.finish();ftrim.finish()
 # Waiting at the pump: oak bucket, tall copper jug, shallow redware bowl.
 # The Bevy water plane and the lip share this small authoring manifest.
@@ -581,6 +636,10 @@ for dx,dz in [(0,1),(1,0),(0,-1),(-1,0)]:
  gold.beam((4+dx*.23,1.37,2+dz*.23),(4+dx*.36,1.335,2+dz*.36),.087,.076,n=12)
 for xx,zz in [(3.08,1.08),(4.92,1.08),(3.08,2.92),(4.92,2.92)]:
  stone.box((xx,.19,zz),(.29,.38,.29))
+ for yy,span in [(.07,.38),(.32,.35),(.39,.31)]:
+  stone.box((xx,yy,zz),(span,.075,span))
+ cluster_card(flower_sprites,(xx,.63,zz),.43,.40,tilt=.14)
+ cluster_card(flower_sprites,(xx,.62,zz),.43,.40,yaw=math.pi/2,tilt=.24)
  for j in range(12):
   leaf(ivy,(xx+R.uniform(-.11,.11),.43+R.uniform(0,.12),zz+R.uniform(-.11,.11)),.09,R.random()*math.tau)
   flowers.beam((xx+R.uniform(-.1,.1),.49,zz+R.uniform(-.1,.1)),(xx+R.uniform(-.1,.1),.55,zz+R.uniform(-.1,.1)),.028,.034,n=6)
@@ -588,18 +647,25 @@ gold.finish()
 
 def tree(x,z,s,tag,blossom=False,fruit=False):
  tr=Mesh('trunk_'+tag,'Wood',origin=(x,0,z))
- crown=Mesh('canopy_'+tag,'Petals' if blossom else 'Leaves',origin=(x,0,z))
+ canopy=Mesh('canopy_'+tag,'CrownBlossom' if blossom else 'CrownFresh',origin=(x,0,z))
  def p(dx,y,dz):return (x+dx*s,y*s,z+dz*s)
- tr.beam(p(0,0,0),p(.12,2.35,0),.21*s,.095*s,n=10)
- for k in range(8):
-  a=k*math.tau/8;dx=math.cos(a)*.72;dz=math.sin(a)*.7;y=2.4+R.uniform(-.15,.65)
-  tr.beam(p(.08,1.35,0),p(dx,y,dz),.075*s,.022*s)
-  for j in range(75):
-   angle=R.random()*math.tau;r=math.sqrt(R.random())*.66
-   xx=dx+math.cos(angle)*r;zz=dz+math.sin(angle)*r
-   yy=y+.45*math.sqrt(max(0,1-r*r/.44))+R.uniform(-.12,.12)
-   leaf(crown,p(xx,yy,zz),R.uniform(.14,.23)*s,R.random()*math.tau,R.uniform(-.5,.5))
- tr.finish();crown.finish()
+ tr.beam(p(0,0,0),p(.12,2.35,0),.21*s,.095*s,n=6)
+ # Nine deliberately composed lobes, with separate branches. All foliage lives
+ # in the canonical canopy node, so fruit-shake animation keeps its old pivot.
+ lobes=[(-.68,2.45,-.32,.98),(.54,2.52,-.42,1.02),(-.76,2.38,.44,.96),
+        (.64,2.47,.48,.98),(0,2.34,.72,.98),(-.10,2.88,-.08,1.30),
+        (-.41,3.00,.32,.92),(.36,3.08,.23,.95),(.04,3.28,-.12,.90)]
+ for k,(dx,y,dz,w) in enumerate(lobes):
+  if k<6:tr.beam(p(.08,1.35,0),p(dx,y,dz),.075*s,.022*s,n=6)
+  # Lobe shells, not hundreds of intersecting individual leaves: luminous,
+  # recognisable pixel clusters at all zooms with modest alpha overdraw.
+  cluster_card(canopy,p(dx,y+.13,dz),w*1.22*s,w*1.02*s,yaw=0,tilt=.12)
+  cluster_card(canopy,p(dx,y+.13,dz),w*1.22*s,w*1.02*s,yaw=math.pi/2,tilt=-.12)
+  cluster_card(canopy,p(dx,y+.38,dz),w*1.17*s,w*1.17*s,tilt=-math.pi/2)
+ tr.finish();canopy.finish()
+ # Preserve the historical random stream and therefore every authored fruit
+ # centre, despite replacing the old eight 75-leaf noise clouds.
+ for _ in range(8*(1+75*6)):R.random()
  if fruit:
   for k in range(9):
    a=k*2.4;c=p(math.cos(a)*.86,2.10+R.uniform(-.1,.18),math.sin(a)*.82)
@@ -626,11 +692,11 @@ for x in [-12,12]:
  flag=Mesh('Foreground_Flag_'+str(x),'Banner')
  flag.face([(x,2.55,7.8),(x+1.0,2.4,7.85),(x+1.1,3.8,7.9),(x,3.9,7.8)],[(0,0),(1,0),(1,1),(0,1)])
  flag.finish()
-for mesh in [wood,stone,iron,pots,ivy,flowers,red,linen,goods,copper]:mesh.finish()
+for mesh in [wood,stone,iron,pots,ivy,flowers,red,linen,goods,copper,flower_sprites]:mesh.finish()
 (OUT/'lights.json').write_text(json.dumps([{'pos':spec['position'],'kind':'sconce'} for spec in lamps],indent=2))
 # Static architecture is exported in material batches; animated fruit/crowns keep pivots.
 for mat in M.values():
- obs=[ob for ob in bpy.context.scene.objects if ob.type=='MESH' and ob.data.materials and ob.data.materials[0]==mat and not ob.name.startswith(('canopy_','trunk_','ripe_plum_','Fountain_','Breakfast_','Keeper_'))]
+ obs=[ob for ob in bpy.context.scene.objects if ob.type=='MESH' and ob.data.materials and ob.data.materials[0]==mat and not ob.name.startswith(('canopy_','trunk_','ripe_plum_','Fountain_','Breakfast_','Keeper_','TownSprite_'))]
  if len(obs)<2:continue
  bpy.ops.object.select_all(action='DESELECT')
  for ob in obs:ob.select_set(True)
@@ -651,7 +717,7 @@ bpy.ops.export_scene.gltf(filepath=str(OUT/'orchard.glb'),export_format='GLB',us
 fp=OUT/'orchard.glb';data=fp.read_bytes();size=struct.unpack_from('<I',data,12)[0]
 doc=json.loads(data[20:20+size]);tail=data[20+size:]
 for mat in doc['materials']:
- if mat['name'] in ['Lane_Leaves','Lane_Petals']:
+ if mat['name'] in ['Lane_Leaves','Lane_Petals','Lane_CrownFresh','Lane_CrownBlossom','Lane_FlowerCluster']:
   mat['alphaMode']='MASK';mat['alphaCutoff']=.5;mat['doubleSided']=True
 payload=json.dumps(doc,separators=(',',':')).encode();payload+=b' '*((-len(payload))%4)
 fp.write_bytes(struct.pack('<4sII',b'glTF',2,20+len(payload)+len(tail))+struct.pack('<I4s',len(payload),b'JSON')+payload+tail)
@@ -674,20 +740,20 @@ def render(pos,target,lens,name,dof=False):
  cam.data.type='PERSP';cam.data.lens=lens;cam.data.dof.use_dof=dof
  cam.data.dof.focus_distance=(Vector(cv(target))-cam.location).length;cam.data.dof.aperture_fstop=5.6
  scene.render.filepath=str(ART/name);bpy.ops.render.render(write_still=True)
-render((0,23.4,15.1),(0,.55,-.4),28,'overhead.png',True)
-render((0,13.5,11.6),(0,.7,-.4),42,'overview.png',True)
-render((-2,4.1,8.3),(-1,1.25,-1.0),32,'eye_level.png',True)
-render((-6.9,3.65,7.8),(-6.9,1.65,1.2),44,'inn_detail.png',True)
+render((0,23.4,15.1),(0,.55,-.4),28,'overhead.png')
+render((0,13.5,11.6),(0,.7,-.4),42,'overview.png')
+render((-2,4.1,8.3),(-1,1.25,-1.0),32,'eye_level.png')
+render((-6.9,3.65,7.8),(-6.9,1.65,1.2),44,'inn_detail.png')
 bpy.ops.wm.save_as_mainfile(filepath=str(ART/'orchard.blend'))
 report={
  'generator':'Blender 4.5 bpy; tools/make_lane.py',
- 'source':'Original OpenAI generate_image material sheet plus independently generated inn/workshop 2x2 relief sheets (gpt-image-2-codex), generated for this project; original authored meshes and clipped leaves. No third-party assets.',
- 'revision':'Copper Kettle dense Japanese-western fantasy spring market, grid-authoritative original 3D architecture',
+ 'source':'Original stepped meshes and limited-palette motifs in tools/lane_pixels.py, worked with value relief from town_materials_generated.png. The crown lobes come from art/market/spring-verge-source.png via make_verge_sprites.py. Inn/workshop ornaments retain their original illustrations. All source paintings were generated for this project.',
+ 'revision':'Bright handcrafted chunky fantasy town: cream limestone, caramel timber, airy blue slate, verdigris and select vermilion',
  'coordinates':'glTF Y-up; north -Z; metres; walkable paving top exactly 0; tile boundaries integer +/- .5',
  'grid':'assets/maps/town.grid, 21x15, (-10,-7) first cell; architecture only blocked/outside cells',
- 'atlas':'Original 4x4 single-slab street study, prefiltered to 64 texels per logical tile. Figure, marker and paving share integer centers; fine setts remain at the gutters. Other parts use the 16 authored material cells and architectural detail sheets.',
- 'textures':SOURCE,'roughness':'Per-material generated non-colour maps; cloth/plaster .96, slate .72, copper .42, window .22',
- 'normal_map':'Per-material tangent maps from generated detail, non-colour, glTF normalTexture',
+ 'atlas':'Sixteen 64px metre swatches of staggered limestone. The 64px slate, lime, stone and timber materials retain restrained relief; flower clusters are 32px and painted crown lobes are 80x74.',
+ 'textures':SOURCE,'roughness':'Real non-colour roughness maps; cloth/plaster .96, slate .72, copper .42, iron .47, gold .36, window .22',
+ 'normal_map':'Subtle authored-pixel tangent relief, non-colour; glTF normalTexture. Metals carry actual metallic factors.',
  'materials':[m.name for m in M.values()],
  'fruit_prefix':'ripe_plum_main_','secondary_fruit_prefix':'ripe_plum_secondary_',
  'shake_pivot':'canopy_main local pivot (5,0,-4); canopy_secondary (8,0,-2)',
@@ -695,8 +761,9 @@ report={
  'lights':lamps,
  'interaction_clearance':'Breakfast table (-4,3) top .78; keeper (-5,3) and plum (-3,3) have open overhead. Inn gallery and cloth stop at z2.33, behind interaction row3. Walkable stair-landing tread tops remain y0; real descending flight starts beyond north play boundary z=-6.5. Main trees retain exact pivots.',
  'previews':['overhead.png (north,56deg, game FOV)','overview.png (north gameplay detail)','eye_level.png (deep gate)','inn_detail.png (layered original storefront)'],
- 'comparison':'Viewed captures/plum-morning-j8usqj35/40-morning-at-inn.png, original town.png and reference/visual/copper-square-study.webp. Replaced the meadow/isolated house with contiguous streetfronts, cut-window reveals, generated stone/slate/wood surface detail and striped real-3D market stalls. First rendered crop revealed missing street-facing west windows and excessive narrow FOV; corrected both and added inn-side and foreground stalls.',
- 'art_refinement':'Inn: original lattice, engraved name plaque, recessed stocked cabinet, two real dormers and covered oak gallery. Workshop: asymmetric green-slate silhouette, hooded repair bench, independent tool-rack/waterwheel sheet. East shop: low verdigris roof, real stone arcade and carved spandrels. North: 26m thick arched aqueduct, barrel-vault interior and shadowed iron sluice. Fountain: golden bolted valve cover, sleeves, stone-corner flower beds and garden tree shadow.',
+ 'comparison':'Viewed actual reference/visual/copper-square-game.webp and all four distinct supplied Elin references. Kept the north-facing street, exact map/props/anchors, and replaced dark leaf noise, repeated slab floor and continuous thin roofs with original quiet pixel motifs, luminous tree cluster shells and deliberate stepped carpentry.',
+ 'art_refinement':'Stepped slate roofs and ridge blocks; open verdigris gutters, downspouts and timber corbels; layered gate cornices and archivolt steps; cream stair nosings and descending cheek blocks; clipped pixel flower borders. Canonical tree crown/fruit nodes and material batching preserved.',
+ 'foliage':{'method':'Nine original painted lobes per tree, each two crossed upright cutouts and a horizontal cap; 27 quads per crown. Separate six-sided stems and geometric fruit. Alpha-mask .5, double-sided, real depth and shadows.','materials':['Lane_CrownFresh','Lane_CrownBlossom','Lane_FlowerCluster'],'sprite_nodes':['canopy_main','canopy_secondary','TownSprite_FlowerBorders'],'source':'art/market/spring-verge-source.png, tools/make_verge_sprites.py and tools/lane_pixels.py'},
  'mesh_nodes':len([o for o in scene.objects if o.type=='MESH']),
  'triangles':sum(sum(len(p.vertices)-2 for p in o.data.polygons) for o in scene.objects if o.type=='MESH')
 }

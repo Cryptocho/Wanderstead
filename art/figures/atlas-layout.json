@@ -25,6 +25,27 @@
     ],
     "body_pixels": 108
   },
+  "traveler-diagonal": {
+    "tile": [
+      160,
+      128
+    ],
+    "grid": [
+      4,
+      4
+    ],
+    "rows": [
+      "southwest",
+      "northwest",
+      "northeast",
+      "southeast"
+    ],
+    "foot": [
+      80,
+      126
+    ],
+    "body_pixels": 108
+  },
   "traveler-actions": {
     "tile": [
       160,

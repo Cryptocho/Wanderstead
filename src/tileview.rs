@@ -20,7 +20,7 @@ use crate::{
 pub struct TileViewPlugin;
 
 /// `cell` is None outside the map, behind UI, above the horizon, or during a
-/// keyboard takeover. `path` contains real cardinal steps, excluding the player.
+/// keyboard takeover. `path` contains real eight-way steps, excluding the player.
 #[derive(Resource, Default)]
 pub struct HoverTile {
     pub cell: Option<IVec2>,
@@ -116,6 +116,8 @@ fn sample_hover(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     game: Res<Outing>,
+    sight: Res<crate::sight::SightWindow>,
+    images: Res<Assets<Image>>,
     mut ui: ResMut<Interface>,
     mut hover: ResMut<HoverTile>,
     mut mode: Local<PointerMode>,
@@ -138,6 +140,14 @@ fn sample_hover(
                     | KeyCode::KeyS
                     | KeyCode::KeyA
                     | KeyCode::KeyD
+                    | KeyCode::Numpad1
+                    | KeyCode::Numpad2
+                    | KeyCode::Numpad3
+                    | KeyCode::Numpad4
+                    | KeyCode::Numpad6
+                    | KeyCode::Numpad7
+                    | KeyCode::Numpad8
+                    | KeyCode::Numpad9
             )
         })
     {
@@ -169,7 +179,14 @@ fn sample_hover(
                     .0
                     .viewport_to_world(camera.1, p)
                     .ok()
-                    .and_then(|ray| pick_visible_surface(&game, ray, camera.1))
+                    .and_then(|ray| {
+                        pick_visible_surface(
+                            &game,
+                            ray,
+                            camera.1,
+                            sight.near(p * window.scale_factor(), ray, camera.1, &images),
+                        )
+                    })
             })
     };
     let cell = hit.map(|(cell, _)| cell);
@@ -224,16 +241,17 @@ fn pick_height(area: Area, p: IVec2) -> f32 {
 }
 
 /// Unified world picking for QA; callers apply `book::pointer_over_book` first.
-pub fn pick_cell(game: &Outing, ray: Ray3d, camera: &GlobalTransform) -> Option<IVec2> {
-    pick_visible_surface(game, ray, camera).map(|(cell, _)| cell)
+pub fn pick_cell(game: &Outing, ray: Ray3d, camera: &GlobalTransform, near: f32) -> Option<IVec2> {
+    pick_visible_surface(game, ray, camera, near).map(|(cell, _)| cell)
 }
 
 fn pick_visible_surface(
     game: &Outing,
     ray: Ray3d,
     camera: &GlobalTransform,
+    near: f32,
 ) -> Option<(IVec2, f32)> {
-    let surface = pick_surface(game.area, ray);
+    let surface = pick_surface(game.area, ray, near);
     let mut closest = surface.map_or(f32::INFINITY, |(_, distance)| distance);
     let mut hit = surface.map(|(cell, t)| (cell, (ray.origin + *ray.direction * t).y));
     let normal = *camera.forward();
@@ -246,7 +264,7 @@ fn pick_visible_surface(
     let mut figure = |cell: IVec2, width: f32, height: f32, lift: f32| {
         let foot = ground(cell) + Vec3::Y * lift;
         let t = (foot - ray.origin).dot(normal) / denominator;
-        if t < 0.0 || t > closest {
+        if t < near || t > closest {
             return;
         }
         let point = ray.origin + *ray.direction * t;
@@ -277,7 +295,7 @@ fn pick_visible_surface(
     hit
 }
 
-fn pick_surface(area: Area, ray: Ray3d) -> Option<(IVec2, f32)> {
+fn pick_surface(area: Area, ray: Ray3d, near: f32) -> Option<(IVec2, f32)> {
     let plane_t = if ray.direction.y < -0.0001 {
         -ray.origin.y / ray.direction.y
     } else {
@@ -285,7 +303,7 @@ fn pick_surface(area: Area, ray: Ray3d) -> Option<(IVec2, f32)> {
     };
     let mut result = None;
     let mut closest = f32::INFINITY;
-    if plane_t >= 0.0 && plane_t.is_finite() {
+    if plane_t >= near && plane_t.is_finite() {
         let ground_hit = ray.origin + *ray.direction * plane_t;
         let floor = IVec2::new(ground_hit.x.round() as i32, ground_hit.z.round() as i32);
         if map::inside(floor) {
@@ -303,6 +321,7 @@ fn pick_surface(area: Area, ray: Ray3d) -> Option<(IVec2, f32)> {
             let min = Vec3::new(x as f32 - 0.5, 0.0, z as f32 - 0.5);
             let max = Vec3::new(x as f32 + 0.5, height, z as f32 + 0.5);
             if let Some(t) = ray_box(ray, min, max)
+                && t >= near
                 && t < closest
             {
                 closest = t;
@@ -335,10 +354,11 @@ fn pick_surface(area: Area, ray: Ray3d) -> Option<(IVec2, f32)> {
                 Vec3::new(13.15, 4.875, -6.635),
             ),
         ] {
-            pick_box(ray, min, max, None, &mut closest, &mut result);
+            pick_box(ray, near, min, max, None, &mut closest, &mut result);
         }
         pick_box(
             ray,
+            near,
             Vec3::new(-4.70, 0.0, 2.63),
             Vec3::new(-3.30, 0.78, 3.37),
             Some(crate::game::TABLE),
@@ -347,6 +367,7 @@ fn pick_surface(area: Area, ray: Ray3d) -> Option<(IVec2, f32)> {
         );
         pick_box(
             ray,
+            near,
             Vec3::new(-5.35, 0.0, 3.07),
             Vec3::new(-4.65, 0.77, 3.43),
             Some(crate::game::KEEPER),
@@ -355,6 +376,7 @@ fn pick_surface(area: Area, ray: Ray3d) -> Option<(IVec2, f32)> {
         );
         pick_box(
             ray,
+            near,
             Vec3::new(3.72, 0.30, 1.72),
             Vec3::new(4.28, 1.88, 2.28),
             Some(map::FOUNTAIN),
@@ -376,6 +398,7 @@ fn pick_surface(area: Area, ray: Ray3d) -> Option<(IVec2, f32)> {
         ] {
             pick_box(
                 ray,
+                near,
                 Vec3::new(x as f32 - half, 0.0, z as f32 + 0.38 - half),
                 Vec3::new(x as f32 + half, height, z as f32 + 0.38 + half),
                 Some(IVec2::new(x, z)),
@@ -386,6 +409,7 @@ fn pick_surface(area: Area, ray: Ray3d) -> Option<(IVec2, f32)> {
         for (x, z) in [(0.0, -5.0), (-5.0, -6.0), (5.5, -7.0)] {
             pick_box(
                 ray,
+                near,
                 Vec3::new(x - 0.9, 2.10, z - 0.25),
                 Vec3::new(x + 0.9, 2.39, z + 0.25),
                 None,
@@ -399,6 +423,7 @@ fn pick_surface(area: Area, ray: Ray3d) -> Option<(IVec2, f32)> {
 
 fn pick_box(
     ray: Ray3d,
+    near: f32,
     min: Vec3,
     max: Vec3,
     canonical: Option<IVec2>,
@@ -406,6 +431,7 @@ fn pick_box(
     result: &mut Option<IVec2>,
 ) {
     if let Some(t) = ray_box(ray, min, max)
+        && t >= near
         && t < *closest
     {
         *closest = t;
@@ -630,12 +656,14 @@ fn paint_tiles(
                     }
                 }
             }
-            for enemy in &game.expedition.enemies {
+            for (i, enemy) in game.expedition.enemies.iter().enumerate() {
                 if enemy.hp == 0 {
                     continue;
                 }
                 ink.corners(enemy.pos, 0.054, [0.92, 0.14, 0.10, 0.80], 0.026);
-                if let Some(target) = enemy.warn {
+                if let Some(target) = enemy.warn
+                    && game.expedition.attack_reaches(i, target)
+                {
                     ink.line(
                         enemy.pos.as_vec2(),
                         target.as_vec2(),
@@ -713,12 +741,30 @@ fn paint_tiles(
                 for &step in &hover.path {
                     unsafe_route |= game.danger_at(step);
                     let tint = if unsafe_route {
-                        [1.0, 0.36, 0.19, 0.72]
+                        [1.0, 0.34, 0.15, 0.97]
                     } else {
-                        [0.43, 0.88, 0.78, 0.78]
+                        [0.24, 0.96, 0.76, 0.97]
                     };
                     let start = from.as_vec2();
                     let end = step.as_vec2();
+                    let border = if unsafe_route {
+                        [0.13, 0.026, 0.018, 0.92]
+                    } else {
+                        [0.018, 0.065, 0.068, 0.92]
+                    };
+                    ink.line(
+                        start.lerp(end, 0.17),
+                        start.lerp(end, 0.80),
+                        0.061,
+                        0.093,
+                        border,
+                    );
+                    ink.quad(
+                        end - Vec2::splat(0.079),
+                        end + Vec2::splat(0.079),
+                        0.062,
+                        border,
+                    );
                     ink.line(
                         start.lerp(end, 0.20),
                         start.lerp(end, 0.77),

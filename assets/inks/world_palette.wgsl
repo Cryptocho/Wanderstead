@@ -5,16 +5,17 @@
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
     pbr_bindings,
+    mesh_view_bindings::globals,
     pbr_types,
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
 }
+#import "inks/sky_shelter.wgsl"::visible_sky
+#import "inks/sight_cutaway.wgsl"::hides_traveler
 
 struct PaletteUniform {
     // enabled, world texels/metre, illumination levels/stop, ordered dither amplitude
     settings: vec4<f32>,
-    focus: vec4<f32>,
-    eye: vec4<f32>,
     floor_style: vec4<f32>,
 }
 @group(2) @binding(100) var<uniform> palette: PaletteUniform;
@@ -63,45 +64,36 @@ fn fragment(vertex: VertexOutput, @builtin(front_facing) is_front: bool) -> Frag
     let uy = dpdy(vertex.uv);
     let det = sx.x * sy.y - sx.y * sy.x;
 #endif
-    // View-local foreground cutaway is independent of the F7 palette switch.
-    // The original geometry still casts real shadows. Ground, people and the
-    // breakfast props never enter this branch.
-    if palette.focus.w > 0.5 && vertex.world_position.y > palette.focus.y - 0.60 {
-        let ray = palette.focus.xyz - palette.eye.xyz;
-        let ray_length = max(length(ray), 0.001);
-        let direction = ray / ray_length;
-        let along = dot(vertex.world_position.xyz - palette.eye.xyz, direction);
-        if along > 0.35 && along < ray_length - 0.38 {
-            let right = normalize(cross(direction, vec3<f32>(0.0, 1.0, 0.0)));
-            let up = normalize(cross(right, direction));
-            let relative = vertex.world_position.xyz - (palette.eye.xyz + direction * along);
-            let oval = vec2<f32>(dot(relative, right) / 0.49, dot(relative, up) / 0.91);
-            let radius = dot(oval, oval);
-            let cell = vec2<i32>(floor(vertex.world_position.xy * max(palette.settings.y, 1.0)));
-            let edge = 0.88 + ordered_threshold(cell) * 0.18;
-            if radius < edge { discard; }
-        }
-    }
-    var pbr = pbr_input_from_standard_material(vertex, is_front);
-    pbr.material.base_color = alpha_discard(pbr.material, pbr.material.base_color);
+    if hides_traveler(vertex.position,vertex.world_position.y) {discard;}
+    var ink_vertex=vertex;
+    let drawn_mask=(pbr_bindings::material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_RESERVED_BITS) == pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_MASK;
 #ifdef VERTEX_UVS_A
-    if enabled && abs(det) > 0.00000001 &&
+    // All PBR channels (normal, roughness and albedo) address the same
+    // world-sized material pixel. At grazing angles blend back to derivatives.
+    if enabled && !drawn_mask && abs(det)>0.00000001 {
+        let coverage=1.-smoothstep(.68,1.20,max(length(sx),length(sy))/pitch);
+        let s=(vec2<f32>(.5)-fract(chart/pitch))*(pitch/det);
+        ink_vertex.uv+=coverage*((ux*sy.y-uy*sx.y)*s.x+(uy*sx.x-ux*sy.x)*s.y);
+    }
+#endif
+    var pbr = pbr_input_from_standard_material(ink_vertex, is_front);
+    pbr.material.base_color = alpha_discard(pbr.material, pbr.material.base_color);
+    let sky=visible_sky(vertex.world_position.xyz,normalize(pbr.world_normal));
+    pbr.diffuse_occlusion*=sky;pbr.specular_occlusion*=sqrt(sky);
+#ifdef VERTEX_UVS_A
+    if enabled && !drawn_mask && abs(det) > 0.00000001 &&
         (pbr_bindings::material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_BASE_COLOR_TEXTURE_BIT) != 0u {
         let projected = max(length(sx), length(sy)) / pitch;
         if projected < 1.1 {
-            // Box-filter each virtual texel. A nearest sample of a 512px relief
-            // reduced to a 48px block aliases its mortar and reads as salt noise.
+            // Average the two opposing quadrants of a virtual material texel.
             let du = (ux*sy.y - uy*sx.y) * (pitch/det);
             let dv = (uy*sx.x - ux*sy.x) * (pitch/det);
             let shift = vec2<f32>(0.5) - fract(chart/pitch);
             let middle = vertex.uv + du*shift.x + dv*shift.y;
-            let a = .24*(du+dv);
-            let b = .24*(du-dv);
-            let filtered = .25*(
+            let a = .26*(du+dv);
+            let filtered = .5*(
                 textureSampleLevel(pbr_bindings::base_color_texture,pbr_bindings::base_color_sampler,middle+a,0.).rgb+
-                textureSampleLevel(pbr_bindings::base_color_texture,pbr_bindings::base_color_sampler,middle-a,0.).rgb+
-                textureSampleLevel(pbr_bindings::base_color_texture,pbr_bindings::base_color_sampler,middle+b,0.).rgb+
-                textureSampleLevel(pbr_bindings::base_color_texture,pbr_bindings::base_color_sampler,middle-b,0.).rgb);
+                textureSampleLevel(pbr_bindings::base_color_texture,pbr_bindings::base_color_sampler,middle-a,0.).rgb);
             var factor=pbr_bindings::material.base_color.rgb;
 #ifdef VERTEX_COLORS
             factor *= vertex.color.rgb;
@@ -112,6 +104,7 @@ fn fragment(vertex: VertexOutput, @builtin(front_facing) is_front: bool) -> Frag
         }
     }
 #endif
+    var reflected_water=0.;
     if enabled && palette.floor_style.x>.5 && geometric.y>.76 && abs(vertex.world_position.y)<.16 {
         let s=(floor(vertex.world_position.xz/pitch)+.5)*pitch;
         let tile=vec2<i32>(floor(s+.5));
@@ -126,6 +119,11 @@ fn fragment(vertex: VertexOutput, @builtin(front_facing) is_front: bool) -> Frag
             let foot=1.-smoothstep(.01,.57,edge_distance(banks.r,f));
             let wet_bank=min(edge_distance(banks.g,f),select(2.,edge_distance(banks.b,f),palette.floor_style.y>.5));
             let damp=(1.-smoothstep(.055,.97,wet_bank))*(.64+.36*fleck);
+            if damp>.12 {
+                let t=globals.time;
+                let ridge=abs(sin(s.x*9.+s.y*3.+.85*sin(s.y*5.-t*.6))+cos(s.y*8.3-t*.57));
+                reflected_water=.17*damp*(1.-smoothstep(.023,.17,ridge));
+            }
             let seam=min(min(f.x,1.-f.x),min(f.y,1.-f.y));
             let moss=(1.-smoothstep(.01,.105,seam))*smoothstep(.38,.82,fleck)*(.13+.52*foot);
             let flags=pbr.material.base_color.rgb*mix(vec3<f32>(.86,.91,1.01),vec3<f32>(1.10,1.01,.91),granite);
@@ -148,7 +146,7 @@ fn fragment(vertex: VertexOutput, @builtin(front_facing) is_front: bool) -> Frag
             let delta = centre - pbr.world_position.xyz;
             pbr.world_position = vec4<f32>(pbr.world_position.xyz + delta - normal * dot(delta, normal), 1.0);
         }
-        out.color = apply_pbr_lighting(pbr);
+        out.color = apply_pbr_lighting(pbr)+vec4<f32>(reflected_water*vec3<f32>(.31,.72,.74),0.);
         if enabled {
             let weights = vec3<f32>(0.2126, 0.7152, 0.0722);
             let luminance = max(dot(out.color.rgb, weights), 0.00001);
@@ -161,12 +159,12 @@ fn fragment(vertex: VertexOutput, @builtin(front_facing) is_front: bool) -> Frag
             // continuous; the surface's roughness and Fresnel remain Bevy's real PBR.
             let illumination = log2(luminance / albedo);
             let band = floor(illumination * steps + 0.5 + threshold) / steps;
-            let amount = 0.68 * (1.0 - 0.8 * pbr.material.metallic);
+            let amount = 0.84 * (1.0 - 0.82 * pbr.material.metallic);
             let band_luminance = albedo * exp2(mix(illumination, band, amount));
             // Cool only the ink in the darkest recesses; keep colored lamps,
             // metal glints, and the real albedo instead of tinting the whole frame.
             let recess = (1.0 - smoothstep(0.045, 0.24, luminance)) * (1.0 - pbr.material.metallic);
-            let ink = mix(vec3<f32>(1.0), vec3<f32>(0.87, 0.94, 1.055), recess);
+            let ink = mix(vec3<f32>(1.0), vec3<f32>(0.91, 0.985, 1.12), recess);
             out.color = vec4<f32>(out.color.rgb * (band_luminance / luminance) * ink, out.color.a);
         }
     }

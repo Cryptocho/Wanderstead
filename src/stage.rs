@@ -6,7 +6,7 @@ use bevy::{
     pbr::{ExtendedMaterial, MaterialExtension},
     prelude::*,
     render::render_resource::{
-        AsBindGroup, ShaderRef, TextureViewDescriptor, TextureViewDimension,
+        AsBindGroup, Buffer, ShaderRef, TextureViewDescriptor, TextureViewDimension,
     },
 };
 
@@ -43,8 +43,8 @@ impl Plugin for StagePlugin {
     }
 }
 
-/// F7 changes only the surface treatment; camera, light, geometry and fog stay fixed.
-#[derive(Resource, Clone, Debug)]
+/// F7 compares the painted world and the uninked PBR scene under identical light and lens.
+#[derive(Resource, Clone, Debug, bevy::render::extract_resource::ExtractResource)]
 pub struct PaletteState {
     pub enabled: bool,
     pub world_texels: f32,
@@ -57,9 +57,9 @@ impl Default for PaletteState {
     fn default() -> Self {
         Self {
             enabled: true,
-            world_texels: 48.0,
-            light_steps: 4.0,
-            dither_strength: 0.13,
+            world_texels: 32.0,
+            light_steps: 3.25,
+            dither_strength: 0.22,
         }
     }
 }
@@ -75,20 +75,22 @@ impl PaletteState {
     }
 }
 
-#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[derive(Asset, AsBindGroup, TypePath, Debug, Clone)]
 pub struct WorldPalette {
     #[uniform(100)]
     pub settings: Vec4,
-    /// xyz = player chest, w = whether this is an occluding landscape surface.
-    #[uniform(100)]
-    pub focus: Vec4,
-    #[uniform(100)]
-    pub eye: Vec4,
     /// 1 = town flags, 2 = cistern flags. Other surfaces keep their own patina.
     #[uniform(100)]
     pub floor_style: Vec4,
     #[texture(101)]
     pub site: Handle<Image>,
+    #[storage(102, read_only, buffer, visibility(fragment))]
+    window: Buffer,
+    #[texture(103)]
+    contour: Handle<Image>,
+    #[texture(105)]
+    #[sampler(106)]
+    shelter: Handle<Image>,
 }
 
 impl MaterialExtension for WorldPalette {
@@ -103,7 +105,7 @@ type WorldMaterial = ExtendedMaterial<StandardMaterial, WorldPalette>;
 struct SurfaceCache(HashMap<AssetId<StandardMaterial>, Handle<WorldMaterial>>);
 
 #[derive(Component)]
-struct StageRoot(bool);
+struct StageRoot;
 #[derive(Component)]
 struct Inked;
 #[derive(Component)]
@@ -148,7 +150,21 @@ struct StageProps {
 }
 
 #[derive(Resource)]
-struct SiteEdges(Handle<Image>);
+pub(crate) struct SiteEdges(pub Handle<Image>);
+
+#[derive(Resource)]
+pub(crate) struct SkyShelter {
+    town: Handle<Image>,
+    cistern: Handle<Image>,
+}
+impl SkyShelter {
+    pub fn at(&self, area: Area) -> &Handle<Image> {
+        match area {
+            Area::Town => &self.town,
+            Area::Cistern => &self.cistern,
+        }
+    }
+}
 
 /// Four edge bits per tile: masonry contact, water, and the fountain apron.
 /// This is baked once from the same topology used by the movers and the mouse.
@@ -165,11 +181,15 @@ fn site_edges(images: &mut Assets<Image>) -> SiteEdges {
                 let mut wall = 0u8;
                 let mut water = 0;
                 let mut rim = 0;
+                let mut shore = 0u8;
                 for (i, d) in [IVec2::NEG_X, IVec2::X, IVec2::NEG_Y, IVec2::Y]
                     .into_iter()
                     .enumerate()
                 {
                     let v = map::glyph(area, IVec2::new(x, z) + d);
+                    if v != b'~' {
+                        shore |= 1 << i;
+                    }
                     if matches!(
                         v,
                         b'#' | b'C' | b'!' | b'R' | b'b' | b'T' | b't' | b'F' | b'f'
@@ -183,7 +203,7 @@ fn site_edges(images: &mut Assets<Image>) -> SiteEdges {
                         rim |= 1 << i;
                     }
                 }
-                data.extend_from_slice(&[wall, water, rim, 255]);
+                data.extend_from_slice(&[wall, water, rim, shore]);
             }
         }
     }
@@ -207,7 +227,22 @@ enum OldWorks {
     TonicLid(Quat),
 }
 
-fn create_regions(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+fn create_regions(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    assets: Res<AssetServer>,
+) {
+    use bevy::image::{ImageLoaderSettings, ImageSampler};
+    let field = |path| {
+        assets.load_with_settings(path, |s: &mut ImageLoaderSettings| {
+            s.is_srgb = false;
+            s.sampler = ImageSampler::linear();
+        })
+    };
+    commands.insert_resource(SkyShelter {
+        town: field("inks/square-shelter.png"),
+        cistern: field("inks/cistern-shelter.png"),
+    });
     commands.insert_resource(site_edges(&mut images));
     let town = commands
         .spawn((
@@ -313,13 +348,13 @@ fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regi
         Name::new("Town street and shops"),
         ChildOf(roots.town),
         SceneRoot(assets.load("lanes/orchard.glb#Scene0")),
-        StageRoot(true),
+        StageRoot,
     ));
     commands.spawn((
         Name::new("Old springworks"),
         ChildOf(roots.cistern),
         SceneRoot(assets.load("cistern/cistern.glb#Scene0")),
-        StageRoot(true),
+        StageRoot,
     ));
     for (area, path) in [
         (Area::Town, "market/market-trimmings.glb#Scene0"),
@@ -328,7 +363,7 @@ fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regi
         commands.spawn((
             SceneRoot(assets.load(path)),
             ChildOf(roots.root(area)),
-            StageRoot(true),
+            StageRoot,
         ));
     }
     commands.spawn((
@@ -336,13 +371,13 @@ fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regi
         ChildOf(roots.town),
         SceneRoot(assets.load("inks/bowl.glb#Scene0")),
         Transform::from_translation(BOWL_POSITION),
-        StageRoot(false),
+        StageRoot,
     ));
     commands.spawn((
         SceneRoot(assets.load("inks/curd.glb#Scene0")),
         ChildOf(roots.town),
         Transform::from_translation(BOWL_POSITION + Vec3::Y * 0.153),
-        StageRoot(false),
+        StageRoot,
         Curd,
     ));
     commands.spawn((
@@ -350,7 +385,7 @@ fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regi
         ChildOf(roots.town),
         Transform::from_translation(BOWL_POSITION + Vec3::Y * 0.16),
         Visibility::Hidden,
-        StageRoot(false),
+        StageRoot,
         Juice,
     ));
     commands.spawn((
@@ -358,7 +393,7 @@ fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regi
         SceneRoot(assets.load("inks/spoon.glb#Scene0")),
         Transform::from_translation(BOWL_POSITION + Vec3::new(0.14, 0.153, 0.11))
             .with_rotation(Quat::from_rotation_y(-0.35) * Quat::from_rotation_z(0.22)),
-        StageRoot(false),
+        StageRoot,
         Spoon,
     ));
     commands.insert_resource(StageProps {
@@ -369,6 +404,7 @@ fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regi
 fn add_atmosphere(mut commands: Commands, cameras: Query<Entity, Added<Camera3d>>) {
     for entity in &cameras {
         commands.entity(entity).insert((
+            EnvironmentMapLight::default(),
             bevy::pbr::ClusterConfig::FixedZ {
                 total: 576,
                 z_slices: 4,
@@ -414,17 +450,13 @@ fn bind_sky(
     commands.remove_resource::<MorningSky>();
 }
 
-fn stage_owner(
-    mut entity: Entity,
-    roots: &Query<&StageRoot>,
-    parents: &Query<&ChildOf>,
-) -> Option<bool> {
+fn in_stage(mut entity: Entity, roots: &Query<&StageRoot>, parents: &Query<&ChildOf>) -> bool {
     loop {
-        if let Ok(root) = roots.get(entity) {
-            return Some(root.0);
+        if roots.contains(entity) {
+            return true;
         }
         let Ok(parent) = parents.get(entity) else {
-            return None;
+            return false;
         };
         entity = parent.parent();
     }
@@ -448,14 +480,17 @@ fn bind_stage_surfaces(
     mut cache: ResMut<SurfaceCache>,
     palette: Res<PaletteState>,
     site: Res<SiteEdges>,
+    shelter: Res<SkyShelter>,
+    sight: Res<crate::sight::SightWindow>,
     names: Query<&Name>,
     flowing: Single<Entity, With<crate::spring::Refilled>>,
 ) {
     for (entity, source, mesh, name) in &surfaces {
-        let Some(cutaway) = stage_owner(entity, &roots, &parents) else {
+        if !in_stage(entity, &roots, &parents) {
+            // Figure sheets and effects use their own material families.
             commands.entity(entity).insert(Inked);
             continue;
-        };
+        }
         let Some(base) = originals.get(&source.0) else {
             continue;
         };
@@ -472,8 +507,9 @@ fn bind_stage_surfaces(
                     base,
                     extension: WorldPalette {
                         settings: palette.uniform(),
-                        focus: Vec4::new(0.0, 0.85, 0.0, if cutaway { 1.0 } else { 0.0 }),
-                        eye: Vec4::ZERO,
+                        window: sight.buffer.clone(),
+                        contour: sight.contour.clone(),
+                        shelter: shelter.town.clone(),
                         floor_style: Vec4::new(
                             match name.map(|m| m.0.as_str()) {
                                 Some("Lane_Paving") => 1.,
@@ -525,34 +561,31 @@ fn toggle_palette(keys: Res<ButtonInput<KeyCode>>, mut palette: ResMut<PaletteSt
 fn sync_palette(
     palette: Res<PaletteState>,
     outing: Res<Outing>,
-    cameras: Query<&Transform, With<Camera3d>>,
     cache: Res<SurfaceCache>,
     mut materials: ResMut<Assets<WorldMaterial>>,
+    shelter: Res<SkyShelter>,
+    mut last: Local<Option<(Area, bool)>>,
 ) {
-    let Ok(camera) = cameras.single() else {
+    let wet = outing.expedition.quest == Quest::Restored;
+    let mark = (outing.area, wet);
+    if *last == Some(mark) && !palette.is_changed() && !cache.is_changed() {
         return;
-    };
-    let focus = ground(outing.player) + Vec3::Y * 0.85;
-    let eye = camera.translation.extend(0.0);
+    }
+    *last = Some(mark);
     let settings = palette.uniform();
+    let field = shelter.at(outing.area);
     for handle in cache.0.values() {
-        let changed = materials.get(handle).is_some_and(|material| {
-            let extension = &material.extension;
-            extension.settings != settings
-                || extension.focus.truncate() != focus
-                || extension.eye != eye
-                || extension.floor_style.y
-                    != (outing.expedition.quest == Quest::Restored) as u8 as f32
-        });
-        if !changed {
+        if materials.get(handle).is_some_and(|m| {
+            m.extension.settings == settings
+                && m.extension.shelter == *field
+                && m.extension.floor_style.y == wet as u8 as f32
+        }) {
             continue;
         }
         if let Some(material) = materials.get_mut(handle) {
             material.extension.settings = settings;
-            material.extension.focus = focus.extend(material.extension.focus.w);
-            material.extension.eye = eye;
-            material.extension.floor_style.y =
-                (outing.expedition.quest == Quest::Restored) as u8 as f32;
+            material.extension.floor_style.y = wet as u8 as f32;
+            material.extension.shelter = field.clone();
         }
     }
 }
@@ -564,7 +597,7 @@ fn bind_tree_nodes(
     parents: Query<&ChildOf>,
 ) {
     for (entity, name, transform) in &nodes {
-        if stage_owner(entity, &roots, &parents).is_none() {
+        if !in_stage(entity, &roots, &parents) {
             continue;
         }
         commands.entity(entity).insert(TreeNodeBound);
@@ -687,7 +720,7 @@ fn breakfast_feedback(
                 SceneRoot(props.plum.clone()),
                 Transform::from_translation(portion_position(index, count) + Vec3::Y * 0.30),
                 Portion { index, age: 0.0 },
-                StageRoot(false),
+                StageRoot,
             ));
         }
     }
