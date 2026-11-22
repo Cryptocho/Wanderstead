@@ -41,7 +41,7 @@ impl Options {
             match arg.to_str() {
                 Some("--help" | "-h") => {
                     println!(
-                        "铜壶镇 · 第一股泉水\n  cargo run --locked -- [--fps auto|100|50] [--fresh]\n  --fresh     从第一天开始，不读写手记\n  --qa PATH   启用本地桌面测试接口\n  左键点格走路、调查、交战；Q 守势，F 技艺，R 喝药，J 手记。滚轮或 +/- 变焦，Home 复位，F12 截图，Ctrl+Q 退出。"
+                        "铜壶镇 · 第一股泉水\n  cargo run --locked -- [--fps auto|100|50] [--fresh]\n  --fresh     从第一天开始，不读写手记\n  --qa PATH   启用本地桌面测试接口\n  左键点格走路、调查、交战；Q 守势，F 技艺，R 喝药，J 手记。H 切换常驻界面（默认隐藏）。滚轮或 +/- 变焦，Home 复位，F12 截图，Ctrl+Q 退出。"
                     );
                     return Ok(None);
                 }

@@ -128,7 +128,7 @@ impl HudPart {
         node
     }
     fn visible(self, page: Page, hud: bool, area: Area) -> bool {
-        if modal(page) || (!hud && page == Page::Roam) {
+        if modal(page) || (!hud && !matches!(self, Self::Field)) {
             return false;
         }
         match self {

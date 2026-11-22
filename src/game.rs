@@ -155,7 +155,7 @@ impl Default for Interface {
             page: Page::Roam,
             cursor: START,
             filling: 0,
-            hud: true,
+            hud: false,
         }
     }
 }
