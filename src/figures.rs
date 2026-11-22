@@ -5,11 +5,20 @@ use bevy::{
     image::{ImageLoaderSettings, ImageSampler},
     pbr::{NotShadowCaster, NotShadowReceiver},
     prelude::*,
-    render::{mesh::Indices, render_resource::PrimitiveTopology, view::RenderLayers},
+    render::{
+        mesh::{Indices, MeshAabb},
+        primitives::Aabb,
+        render_resource::PrimitiveTopology,
+        view::{RenderLayers, VisibilitySystems},
+    },
     transform::TransformSystem,
 };
 
 use crate::game::*;
+use crate::{
+    delve::{Enemy, EnemyKind},
+    map::Area,
+};
 
 pub struct FiguresPlugin;
 
@@ -33,6 +42,7 @@ impl Plugin for FiguresPlugin {
                     observe_turn,
                     animate_figures,
                     animate_fruit,
+                    animate_feedback,
                     light_shadow_layer,
                 )
                     .chain()
@@ -44,14 +54,23 @@ impl Plugin for FiguresPlugin {
                     .after(crate::lens::LensSet)
                     .before(TransformSystem::TransformPropagate),
             );
+        if std::env::args_os().any(|arg| arg == "--qa") {
+            app.add_systems(
+                PostUpdate,
+                diagnose_figures.after(VisibilitySystems::CheckVisibility),
+            );
+        }
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActorKind {
     Traveler,
     Keeper,
+    Herbalist,
     Jelly,
+    Sentry,
+    Moth,
 }
 
 #[derive(Component)]
@@ -68,6 +87,14 @@ struct Actor {
     card: Entity,
     caster: Entity,
     shadow: Entity,
+    enemy_id: Option<u8>,
+    hp: u8,
+    warn: Option<IVec2>,
+    striking: bool,
+    dying: bool,
+    hurt: bool,
+    down: bool,
+    pips: Option<[Entity; 3]>,
 }
 
 #[derive(Component)]
@@ -92,28 +119,46 @@ struct FruitFlight {
     shrink: bool,
 }
 
+#[derive(Component)]
+struct Feedback {
+    age: f32,
+    duration: f32,
+    velocity: Vec3,
+}
+
 #[derive(Resource, Default)]
 struct VisualBeat {
     initialized: bool,
     day: u32,
     turn: u32,
     jelly: IVec2,
+    area: Option<Area>,
+    hp: u8,
 }
 
 struct Sheet {
     frames: Vec<Handle<Mesh>>,
     material: Handle<StandardMaterial>,
+    bounds: Aabb,
 }
 
 #[derive(Resource)]
 struct FigureArt {
     walk: Sheet,
     actions: Sheet,
+    combat: Sheet,
+    sentry: Sheet,
+    moth: Sheet,
     keeper: Sheet,
+    herbalist: Sheet,
     jelly: Sheet,
     plum: Sheet,
     contact: Handle<Mesh>,
     contact_material: Handle<StandardMaterial>,
+    spark: Handle<Mesh>,
+    hit_material: Handle<StandardMaterial>,
+    heal_material: Handle<StandardMaterial>,
+    harvest_material: Handle<StandardMaterial>,
 }
 
 /// Pixel (width/2,height-2) is the sole/base pivot. The empty two-pixel gutter
@@ -170,27 +215,49 @@ fn sheet(
         settings.sampler = ImageSampler::nearest();
     });
     let material = materials.add(StandardMaterial {
-        base_color_texture: Some(texture),
+        base_color: Color::srgb(0.78, 0.78, 0.78),
+        base_color_texture: Some(texture.clone()),
+        // A small diffuse floor preserves local colours in a deep alcove.
+        // Phosphor wings themselves emit light; cloth still takes real shadows.
+        emissive_texture: Some(texture),
+        emissive: if path == "figures/phosphor-moth.png" {
+            LinearRgba::rgb(0.34, 0.38, 0.48)
+        } else {
+            LinearRgba::rgb(0.075, 0.068, 0.080)
+        },
         alpha_mode: AlphaMode::Mask(0.5),
         cull_mode: None,
         double_sided: true,
-        perceptual_roughness: 0.96,
-        reflectance: 0.08,
+        perceptual_roughness: 1.0,
+        reflectance: 0.0,
         ..default()
     });
+    let mut bounds = Aabb::default();
     let frames = (0..(grid.x * grid.y) as usize)
         .map(|i| {
-            meshes.add(card_mesh(
+            let mesh = card_mesh(
                 i,
                 grid.x as usize,
                 grid.y as usize,
                 pixels,
                 body_pixels,
                 height,
-            ))
+            );
+            if i == 0 {
+                bounds = mesh
+                    .compute_aabb()
+                    .expect("figure quad has position bounds");
+            }
+            meshes.add(mesh)
         })
         .collect();
-    Sheet { frames, material }
+    // RENDER_WORLD meshes leave CPU Assets after upload. Late-spawned cards
+    // therefore need these finite bounds explicitly, including their casters.
+    Sheet {
+        frames,
+        material,
+        bounds,
+    }
 }
 
 fn spawn_figures(
@@ -200,14 +267,14 @@ fn spawn_figures(
     mut materials: ResMut<Assets<StandardMaterial>>,
     state: Res<Outing>,
 ) {
-    let human = Vec2::new(96.0, 128.0);
+    let human = Vec2::new(160.0, 128.0);
     let art = FigureArt {
         walk: sheet(
             "figures/traveler-walk.png",
             UVec2::new(4, 4),
             human,
             108.0,
-            1.52,
+            1.32,
             &server,
             &mut meshes,
             &mut materials,
@@ -217,7 +284,47 @@ fn spawn_figures(
             UVec2::new(4, 4),
             human,
             108.0,
-            1.52,
+            1.32,
+            &server,
+            &mut meshes,
+            &mut materials,
+        ),
+        combat: sheet(
+            "figures/traveler-combat.png",
+            UVec2::new(4, 4),
+            human,
+            108.0,
+            1.32,
+            &server,
+            &mut meshes,
+            &mut materials,
+        ),
+        sentry: sheet(
+            "figures/copper-sentry.png",
+            UVec2::new(4, 4),
+            Vec2::splat(128.0),
+            108.0,
+            1.34,
+            &server,
+            &mut meshes,
+            &mut materials,
+        ),
+        moth: sheet(
+            "figures/phosphor-moth.png",
+            UVec2::new(4, 4),
+            Vec2::splat(128.0),
+            94.0,
+            0.98,
+            &server,
+            &mut meshes,
+            &mut materials,
+        ),
+        herbalist: sheet(
+            "market/herbalist.png",
+            UVec2::new(4, 1),
+            Vec2::new(96., 128.),
+            108.,
+            1.31,
             &server,
             &mut meshes,
             &mut materials,
@@ -227,7 +334,7 @@ fn spawn_figures(
             UVec2::new(4, 2),
             human,
             108.0,
-            1.50,
+            1.30,
             &server,
             &mut meshes,
             &mut materials,
@@ -264,79 +371,196 @@ fn spawn_figures(
             cull_mode: None,
             ..default()
         }),
+        spark: meshes.add(Sphere::new(0.055)),
+        hit_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.56, 0.24),
+            emissive: LinearRgba::new(1.8, 0.42, 0.08, 1.0),
+            unlit: true,
+            ..default()
+        }),
+        heal_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.36, 1.0, 0.70),
+            emissive: LinearRgba::new(0.14, 0.8, 0.42, 1.0),
+            unlit: true,
+            ..default()
+        }),
+        harvest_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.90, 0.69, 0.98),
+            emissive: LinearRgba::new(0.55, 0.26, 0.7, 1.0),
+            unlit: true,
+            ..default()
+        }),
     };
     for (kind, cell, facing) in [
         (ActorKind::Traveler, state.player, state.facing),
         (ActorKind::Keeper, KEEPER, IVec2::X),
+        (ActorKind::Herbalist, crate::map::APOTHECARY, IVec2::NEG_X),
         (ActorKind::Jelly, state.jelly, state.jelly_facing),
     ] {
-        let body = match kind {
-            ActorKind::Traveler => &art.walk,
-            ActorKind::Keeper => &art.keeper,
-            ActorKind::Jelly => &art.jelly,
-        };
-        let index = if kind == ActorKind::Traveler {
-            direction_row(facing) * 4 + 1
-        } else {
-            0
-        };
-        let foot = ground(cell);
-        let root = commands
-            .spawn((Transform::from_translation(foot), Visibility::default()))
-            .id();
-        if kind == ActorKind::Traveler {
-            commands.entity(root).insert(PlayerVisual);
-        }
-        let card = commands
-            .spawn((
-                FigureCard,
-                Mesh3d(body.frames[index].clone()),
-                MeshMaterial3d(body.material.clone()),
-                Transform::default(),
-                NotShadowCaster,
-            ))
-            .id();
-        // The camera-facing artwork never tilts the shadow: this second, hidden
-        // alpha-cutout stays upright, shares the animation, and casts in sunlight.
-        let caster = commands
-            .spawn((
-                Mesh3d(body.frames[index].clone()),
-                MeshMaterial3d(body.material.clone()),
-                Transform::default(),
-                RenderLayers::layer(SHADOW_LAYER),
-            ))
-            .id();
-        commands.entity(root).add_children(&[card, caster]);
-        let shadow = commands
-            .spawn((
-                Mesh3d(art.contact.clone()),
-                MeshMaterial3d(art.contact_material.clone()),
-                Transform::from_xyz(foot.x, 0.012, foot.z)
-                    .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
-                    .with_scale(Vec3::new(0.53, 0.30, 1.0)),
-                NotShadowCaster,
-                NotShadowReceiver,
-            ))
-            .id();
-        commands.entity(root).insert(Actor {
-            kind,
-            from: foot,
-            to: foot,
-            age: ACTION_TIME,
-            moving: false,
-            facing,
-            action: ActionKind::Start,
-            swallowing: false,
-            fed: state.eaten > 0,
-            card,
-            caster,
-            shadow,
-        });
+        spawn_actor(&mut commands, &art, kind, cell, facing, None, state.area);
     }
-    for &cell in &state.fruit {
-        spawn_ground_fruit(&mut commands, &art, cell, 0.0, false);
+    for enemy in &state.expedition.enemies {
+        spawn_actor(
+            &mut commands,
+            &art,
+            enemy_kind(enemy),
+            enemy.pos,
+            state.player - enemy.pos,
+            Some(enemy),
+            state.area,
+        );
+    }
+    if state.area == Area::Town {
+        for &cell in &state.fruit {
+            spawn_ground_fruit(&mut commands, &art, cell, 0.0, false);
+        }
     }
     commands.insert_resource(art);
+}
+
+fn enemy_kind(enemy: &Enemy) -> ActorKind {
+    match enemy.kind {
+        EnemyKind::Sentry => ActorKind::Sentry,
+        EnemyKind::Moth => ActorKind::Moth,
+    }
+}
+
+fn spawn_actor(
+    commands: &mut Commands,
+    art: &FigureArt,
+    kind: ActorKind,
+    cell: IVec2,
+    facing: IVec2,
+    enemy: Option<&Enemy>,
+    area: Area,
+) {
+    let body = match kind {
+        ActorKind::Traveler => &art.walk,
+        ActorKind::Keeper => &art.keeper,
+        ActorKind::Herbalist => &art.herbalist,
+        ActorKind::Jelly => &art.jelly,
+        ActorKind::Sentry => &art.sentry,
+        ActorKind::Moth => &art.moth,
+    };
+    let index = if kind == ActorKind::Traveler {
+        direction_row(facing) * 4 + 1
+    } else {
+        0
+    };
+    let foot = ground(cell);
+    let visible = if kind == ActorKind::Traveler || (enemy.is_some() == (area == Area::Cistern)) {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    let root = commands
+        .spawn((Transform::from_translation(foot), visible))
+        .id();
+    if kind == ActorKind::Traveler {
+        commands.entity(root).insert(PlayerVisual);
+    }
+    let card = commands
+        .spawn((
+            FigureCard,
+            Mesh3d(body.frames[index].clone()),
+            MeshMaterial3d(body.material.clone()),
+            body.bounds,
+            Transform::default(),
+            NotShadowCaster,
+        ))
+        .id();
+    // Keep the sun caster upright; only the visible artwork faces the camera.
+    let caster = commands
+        .spawn((
+            Mesh3d(body.frames[index].clone()),
+            MeshMaterial3d(body.material.clone()),
+            body.bounds,
+            Transform::default(),
+            RenderLayers::layer(SHADOW_LAYER),
+        ))
+        .id();
+    commands.entity(root).add_children(&[card, caster]);
+    let shadow = commands
+        .spawn((
+            Mesh3d(art.contact.clone()),
+            MeshMaterial3d(art.contact_material.clone()),
+            Transform::from_xyz(foot.x, 0.012, foot.z)
+                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                .with_scale(Vec3::new(0.53, 0.30, 1.0)),
+            visible,
+            NotShadowCaster,
+            NotShadowReceiver,
+        ))
+        .id();
+    let pips = enemy.map(|enemy| {
+        let pips: [Entity; 3] = std::array::from_fn(|i| {
+            commands
+                .spawn((
+                    Mesh3d(art.spark.clone()),
+                    MeshMaterial3d(art.hit_material.clone()),
+                    Transform::from_xyz(
+                        (i as f32 - 1.0) * 0.13,
+                        if kind == ActorKind::Moth { 1.02 } else { 1.48 },
+                        0.0,
+                    )
+                    .with_scale(Vec3::splat(0.60)),
+                    if i < enemy.hp as usize {
+                        Visibility::Inherited
+                    } else {
+                        Visibility::Hidden
+                    },
+                    NotShadowCaster,
+                    NotShadowReceiver,
+                ))
+                .id()
+        });
+        commands.entity(root).add_children(&pips);
+        pips
+    });
+    commands.entity(root).insert(Actor {
+        kind,
+        from: foot,
+        to: foot,
+        age: ACTION_TIME,
+        moving: false,
+        facing,
+        action: ActionKind::Start,
+        swallowing: false,
+        fed: false,
+        card,
+        caster,
+        shadow,
+        enemy_id: enemy.map(|e| e.id),
+        hp: enemy.map_or(0, |e| e.hp),
+        warn: enemy.and_then(|e| e.warn),
+        striking: false,
+        dying: false,
+        hurt: false,
+        down: false,
+        pips,
+    });
+}
+
+fn burst(commands: &mut Commands, art: &FigureArt, at: Vec3, material: &Handle<StandardMaterial>) {
+    for i in 0..7 {
+        let angle = i as f32 * std::f32::consts::TAU / 7.0;
+        commands.spawn((
+            Mesh3d(art.spark.clone()),
+            MeshMaterial3d(material.clone()),
+            Transform::from_translation(at),
+            Feedback {
+                age: 0.0,
+                duration: 0.60,
+                velocity: Vec3::new(
+                    angle.cos() * 0.65,
+                    0.75 + (i % 3) as f32 * 0.12,
+                    angle.sin() * 0.42,
+                ),
+            },
+            NotShadowCaster,
+            NotShadowReceiver,
+        ));
+    }
 }
 
 fn spawn_ground_fruit(
@@ -356,6 +580,7 @@ fn spawn_ground_fruit(
         FigureCard,
         Mesh3d(art.plum.frames[0].clone()),
         MeshMaterial3d(art.plum.material.clone()),
+        art.plum.bounds,
         Transform::from_translation(ground(cell) + Vec3::Y * 0.02),
         if delay > 0.0 || falling {
             Visibility::Hidden
@@ -370,57 +595,178 @@ fn observe_turn(
     state: Res<Outing>,
     art: Res<FigureArt>,
     mut beat: ResMut<VisualBeat>,
-    mut actors: Query<(&mut Actor, &mut Transform), Without<GroundPlum>>,
+    mut actors: Query<(Entity, &mut Actor, &mut Transform, &mut Visibility), Without<GroundPlum>>,
+    mut bodies: Query<&mut Visibility, Without<Actor>>,
     fruit: Query<(Entity, &GroundPlum, &Transform), Without<Actor>>,
     flights: Query<Entity, With<FruitFlight>>,
+    feedback: Query<Entity, With<Feedback>>,
 ) {
     if !beat.initialized {
         beat.initialized = true;
         beat.day = state.day;
         beat.turn = state.turn;
         beat.jelly = state.jelly;
+        beat.area = Some(state.area);
+        beat.hp = state.expedition.hp;
         return;
     }
-    if beat.day == state.day && beat.turn == state.turn {
+    if beat.day == state.day && beat.turn == state.turn && beat.area == Some(state.area) {
         return;
     }
     let new_day = beat.day != state.day;
-    for (mut actor, mut transform) in &mut actors {
-        if actor.kind == ActorKind::Keeper {
+    let reset = new_day || beat.area != Some(state.area);
+    for (entity, mut actor, mut transform, mut visibility) in &mut actors {
+        if let Some(id) = actor.enemy_id {
+            if reset || state.area != Area::Cistern {
+                commands.entity(entity).despawn();
+                commands.entity(actor.shadow).despawn();
+                continue;
+            }
+            if let Some(enemy) = state
+                .expedition
+                .enemies
+                .iter()
+                .find(|e| e.id == id && e.hp > 0)
+            {
+                let hurt = enemy.hp < actor.hp;
+                // A hook cancels the warning before it can strike.
+                actor.striking = actor.warn.is_some()
+                    && enemy.warn.is_none()
+                    && !(hurt && state.action == ActionKind::Skill);
+                if let Some(target) = actor.warn.or(enemy.warn) {
+                    actor.facing = target - enemy.pos;
+                } else if actor.to != ground(enemy.pos) {
+                    actor.facing = enemy.pos - IVec2::new(actor.to.x as i32, actor.to.z as i32);
+                }
+                actor.from = transform.translation;
+                actor.from.y = 0.0;
+                actor.to = ground(enemy.pos);
+                actor.moving = actor.from.distance_squared(actor.to) > 0.001;
+                actor.warn = enemy.warn;
+                actor.hp = enemy.hp;
+                actor.hurt = hurt;
+                actor.age = 0.0;
+            } else if !actor.dying {
+                actor.dying = true;
+                actor.warn = None;
+                actor.hp = 0;
+                actor.age = 0.0;
+                actor.moving = false;
+                actor.to = ground(IVec2::new(actor.to.x as i32, actor.to.z as i32));
+                actor.from = actor.to;
+                transform.translation = actor.to;
+            }
+            if let Some(pips) = actor.pips {
+                for (i, pip) in pips.into_iter().enumerate() {
+                    if let Ok(mut visible) = bodies.get_mut(pip) {
+                        *visible = if i < actor.hp as usize {
+                            Visibility::Inherited
+                        } else {
+                            Visibility::Hidden
+                        };
+                    }
+                }
+            }
             continue;
         }
-        let (cell, facing) = if actor.kind == ActorKind::Traveler {
+        let visible = if actor.kind == ActorKind::Traveler || state.area == Area::Town {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        *visibility = visible;
+        if let Ok(mut shadow) = bodies.get_mut(actor.shadow) {
+            *shadow = visible;
+        }
+        if matches!(actor.kind, ActorKind::Keeper | ActorKind::Herbalist) {
+            continue;
+        }
+        let traveler = actor.kind == ActorKind::Traveler;
+        let (cell, facing) = if traveler {
             (state.player, state.facing)
         } else {
             (state.jelly, state.jelly_facing)
         };
         let target = ground(cell);
-        actor.from = transform.translation;
+        actor.from = if reset { target } else { transform.translation };
         actor.to = target;
-        actor.moving = !new_day && actor.from.distance_squared(target) > 0.001;
-        actor.age = if new_day { ACTION_TIME } else { 0.0 };
+        actor.moving = !reset && actor.from.distance_squared(target) > 0.001;
+        actor.age = if reset { ACTION_TIME } else { 0.0 };
         actor.action = state.action;
         actor.facing = facing;
-        actor.swallowing = !new_day && state.swallowed;
+        actor.swallowing = !reset && state.swallowed;
         actor.fed = state.eaten > 0;
-        if new_day {
+        actor.hurt = traveler && !reset && state.expedition.hp < beat.hp;
+        actor.down = traveler && state.expedition.hp == 0;
+        if reset {
             transform.translation = target;
-            actor.from = target;
         }
     }
-    if new_day {
+    if state.area == Area::Cistern {
+        for enemy in &state.expedition.enemies {
+            if reset
+                || !actors
+                    .iter()
+                    .any(|(_, actor, _, _)| actor.enemy_id == Some(enemy.id))
+            {
+                spawn_actor(
+                    &mut commands,
+                    &art,
+                    enemy_kind(enemy),
+                    enemy.pos,
+                    state.player - enemy.pos,
+                    Some(enemy),
+                    state.area,
+                );
+            }
+        }
+    }
+    if reset {
         for entity in &flights {
             commands.entity(entity).despawn();
         }
+        for entity in &feedback {
+            commands.entity(entity).despawn();
+        }
+    } else {
+        if let Some(cell) = state.expedition.target_hit {
+            burst(
+                &mut commands,
+                &art,
+                ground(cell) + Vec3::Y * 0.70,
+                &art.hit_material,
+            );
+        }
+        if state.expedition.hp < beat.hp {
+            burst(
+                &mut commands,
+                &art,
+                ground(state.player) + Vec3::Y * 0.74,
+                &art.hit_material,
+            );
+        } else if state.expedition.hp > beat.hp || state.action == ActionKind::Eat {
+            burst(
+                &mut commands,
+                &art,
+                ground(state.player) + Vec3::Y * 0.70,
+                &art.heal_material,
+            );
+        }
+        if state.action == ActionKind::Gather {
+            burst(
+                &mut commands,
+                &art,
+                ground(state.player) + Vec3::Y * 0.65,
+                &art.harvest_material,
+            );
+        }
     }
     for (entity, plum, transform) in &fruit {
-        if !new_day && state.fruit.contains(&plum.cell) {
-            continue;
-        }
-        if new_day {
+        if reset || state.area != Area::Town {
             commands.entity(entity).despawn();
+        } else if state.fruit.contains(&plum.cell) {
+            continue;
         } else if state.swallowed && plum.cell == beat.jelly {
-            // Preserve the very fruit removed by the rules for its mouthward motion.
             commands
                 .entity(entity)
                 .remove::<GroundPlum>()
@@ -450,47 +796,52 @@ fn observe_turn(
             commands.entity(entity).despawn();
         }
     }
-    for &cell in &state.fruit {
-        if !new_day && fruit.iter().any(|(_, plum, _)| plum.cell == cell) {
-            continue;
+    if state.area == Area::Town {
+        for &cell in &state.fruit {
+            if !reset && fruit.iter().any(|(_, plum, _)| plum.cell == cell) {
+                continue;
+            }
+            let delay =
+                if matches!(state.action, ActionKind::Throw { to, .. } if to == cell) && !reset {
+                    THROW_DELAY + THROW_TIME
+                } else {
+                    0.0
+                };
+            spawn_ground_fruit(
+                &mut commands,
+                &art,
+                cell,
+                delay,
+                state.action == ActionKind::Shake && !reset,
+            );
         }
-        let delay =
-            if matches!(state.action, ActionKind::Throw { to, .. } if to == cell) && !new_day {
-                THROW_DELAY + THROW_TIME
-            } else {
-                0.0
-            };
-        spawn_ground_fruit(
-            &mut commands,
-            &art,
-            cell,
-            delay,
-            state.action == ActionKind::Shake && !new_day,
-        );
-    }
-    if !new_day {
-        if let ActionKind::Throw { from, to } = state.action {
-            commands.spawn((
-                FigureCard,
-                FruitFlight {
-                    from: ground(from) + Vec3::Y * 1.16,
-                    to: ground(to) + Vec3::Y * 0.025,
-                    age: 0.0,
-                    delay: THROW_DELAY,
-                    duration: THROW_TIME,
-                    arc: 2.0,
-                    shrink: false,
-                },
-                Mesh3d(art.plum.frames[0].clone()),
-                MeshMaterial3d(art.plum.material.clone()),
-                Transform::default(),
-                Visibility::Hidden,
-            ));
+        if !reset {
+            if let ActionKind::Throw { from, to } = state.action {
+                commands.spawn((
+                    FigureCard,
+                    FruitFlight {
+                        from: ground(from) + Vec3::Y * 1.03,
+                        to: ground(to) + Vec3::Y * 0.025,
+                        age: 0.0,
+                        delay: THROW_DELAY,
+                        duration: THROW_TIME,
+                        arc: 2.0,
+                        shrink: false,
+                    },
+                    Mesh3d(art.plum.frames[0].clone()),
+                    MeshMaterial3d(art.plum.material.clone()),
+                    art.plum.bounds,
+                    Transform::default(),
+                    Visibility::Hidden,
+                ));
+            }
         }
     }
     beat.day = state.day;
     beat.turn = state.turn;
     beat.jelly = state.jelly;
+    beat.area = Some(state.area);
+    beat.hp = state.expedition.hp;
 }
 
 fn direction_row(direction: IVec2) -> usize {
@@ -506,27 +857,48 @@ fn direction_row(direction: IVec2) -> usize {
 }
 
 fn animate_figures(
+    mut commands: Commands,
     time: Res<Time>,
     art: Res<FigureArt>,
-    mut actors: Query<(&mut Actor, &mut Transform)>,
+    mut actors: Query<(Entity, &mut Actor, &mut Transform)>,
     mut cards: Query<
         (
             &mut Mesh3d,
             &mut MeshMaterial3d<StandardMaterial>,
             &mut Transform,
+            &mut Visibility,
         ),
         Without<Actor>,
     >,
 ) {
-    for (mut actor, mut root) in &mut actors {
+    for (entity, mut actor, mut root) in &mut actors {
         actor.age += time.delta_secs();
+        if actor.dying && actor.age >= 1.05 {
+            commands.entity(entity).despawn();
+            commands.entity(actor.shadow).despawn();
+            continue;
+        }
         let mut mirror = false;
         let (sheet, frame) = match actor.kind {
             ActorKind::Traveler => {
                 let t = (actor.age / WALK_TIME).clamp(0.0, 1.0);
                 let smooth = t * t * (3.0 - 2.0 * t);
                 root.translation = actor.from.lerp(actor.to, smooth);
-                if actor.age < ACTION_TIME {
+                if actor.down {
+                    (&art.combat, 8 + ((actor.age / 0.66 * 4.0) as usize).min(3))
+                } else if actor.hurt && (0.32..0.64).contains(&actor.age) {
+                    mirror = actor.facing.x > 0;
+                    (
+                        &art.combat,
+                        8 + (((actor.age - 0.32) / 0.16) as usize).min(1),
+                    )
+                } else if actor.age < ACTION_TIME {
+                    let combat_row = match actor.action {
+                        ActionKind::Strike | ActionKind::Skill => Some(0),
+                        ActionKind::Brace => Some(1),
+                        ActionKind::Drink => Some(3),
+                        _ => None,
+                    };
                     let row = match actor.action {
                         ActionKind::Gather => Some(0),
                         ActionKind::Shake => Some(1),
@@ -534,7 +906,15 @@ fn animate_figures(
                         ActionKind::Eat => Some(3),
                         _ => None,
                     };
-                    if let Some(row) = row {
+                    if let Some(row) = combat_row {
+                        mirror = actor.facing.x > 0;
+                        (
+                            &art.combat,
+                            row * 4 + ((actor.age / ACTION_TIME * 4.0) as usize).min(3),
+                        )
+                    } else if actor.action == ActionKind::Hurt {
+                        (&art.combat, 8 + ((actor.age / 0.18) as usize).min(1))
+                    } else if let Some(row) = row {
                         mirror = match actor.action {
                             ActionKind::Throw { from, to } => to.x > from.x,
                             _ => actor.facing.x > 0,
@@ -554,6 +934,10 @@ fn animate_figures(
                 } else {
                     (&art.walk, direction_row(actor.facing) * 4 + 1)
                 }
+            }
+            ActorKind::Herbalist => {
+                let at = (time.elapsed_secs() / 0.44) as usize % 8;
+                (&art.herbalist, [0, 0, 1, 2, 2, 3, 0, 0][at])
             }
             ActorKind::Keeper => {
                 // Real arm/utensil poses, not a bobbing static cutout. Work continues
@@ -591,9 +975,33 @@ fn animate_figures(
                 };
                 (&art.jelly, frame)
             }
+            ActorKind::Sentry | ActorKind::Moth => {
+                let t = (actor.age / WALK_TIME).clamp(0.0, 1.0);
+                root.translation = actor.from.lerp(actor.to, t * t * (3.0 - 2.0 * t));
+                mirror = actor.facing.x > 0;
+                let frame = if actor.dying {
+                    12 + ((actor.age / 0.72 * 4.0) as usize).min(3)
+                } else if actor.striking && actor.age < 0.64 {
+                    8 + ((actor.age / 0.64 * 4.0) as usize).min(3)
+                } else if actor.warn.is_some() {
+                    4 + ((actor.age / 0.48 * 4.0) as usize).min(3)
+                } else {
+                    ((time.elapsed_secs() / 0.18) as usize) % 4
+                };
+                (
+                    if actor.kind == ActorKind::Sentry {
+                        &art.sentry
+                    } else {
+                        &art.moth
+                    },
+                    frame,
+                )
+            }
         };
         for entity in [actor.card, actor.caster] {
-            if let Ok((mut mesh, mut material, mut transform)) = cards.get_mut(entity) {
+            if let Ok((mut mesh, mut material, mut transform, mut visibility)) =
+                cards.get_mut(entity)
+            {
                 if mesh.0 != sheet.frames[frame] {
                     mesh.0 = sheet.frames[frame].clone();
                 }
@@ -601,9 +1009,23 @@ fn animate_figures(
                     material.0 = sheet.material.clone();
                 }
                 transform.scale.x = if mirror { -1.0 } else { 1.0 };
+                transform.translation.y = if actor.kind == ActorKind::Moth && !actor.dying {
+                    0.26
+                } else {
+                    0.0
+                };
+                *visibility = if actor.hurt
+                    && !actor.dying
+                    && actor.age < 0.30
+                    && (actor.age / 0.055) as usize % 2 == 1
+                {
+                    Visibility::Hidden
+                } else {
+                    Visibility::Inherited
+                };
             }
         }
-        if let Ok((_, _, mut shadow)) = cards.get_mut(actor.shadow) {
+        if let Ok((_, _, mut shadow, _)) = cards.get_mut(actor.shadow) {
             shadow.translation = Vec3::new(root.translation.x, 0.012, root.translation.z);
             let airborne = (root.translation.y / 0.24).clamp(0.0, 1.0);
             let width = if actor.kind == ActorKind::Jelly {
@@ -675,7 +1097,25 @@ fn animate_fruit(
     }
 }
 
+fn animate_feedback(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut sparks: Query<(Entity, &mut Feedback, &mut Transform)>,
+) {
+    for (entity, mut spark, mut transform) in &mut sparks {
+        spark.age += time.delta_secs();
+        if spark.age >= spark.duration {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        transform.translation += spark.velocity * time.delta_secs();
+        spark.velocity.y -= time.delta_secs() * 0.7;
+        transform.scale = Vec3::splat((1.0 - spark.age / spark.duration).max(0.0));
+    }
+}
+
 fn face_camera(
+    // Camera rotation is copied below; this system never moves a foot pivot.
     camera: Query<&Transform, (With<Camera3d>, Without<FigureCard>)>,
     mut cards: Query<&mut Transform, With<FigureCard>>,
 ) {
@@ -700,5 +1140,78 @@ fn light_shadow_layer(
         commands
             .entity(entity)
             .insert(layers.cloned().unwrap_or_default().with(SHADOW_LAYER));
+    }
+}
+
+/// On-demand ECS evidence, after transform/visibility propagation. No state changes.
+fn diagnose_figures(
+    keys: Res<ButtonInput<KeyCode>>,
+    state: Res<Outing>,
+    meshes: Res<Assets<Mesh>>,
+    materials: Res<Assets<StandardMaterial>>,
+    images: Res<Assets<Image>>,
+    actors: Query<(
+        Entity,
+        &Actor,
+        &GlobalTransform,
+        &Visibility,
+        &InheritedVisibility,
+    )>,
+    cards: Query<(
+        &Mesh3d,
+        &MeshMaterial3d<StandardMaterial>,
+        &Transform,
+        &GlobalTransform,
+        &Visibility,
+        &InheritedVisibility,
+        &ViewVisibility,
+        Option<&Aabb>,
+        Option<&RenderLayers>,
+    )>,
+) {
+    if !keys.just_pressed(KeyCode::F10) {
+        return;
+    }
+    info!(
+        "FIGURES_DUMP area={:?} turn={} logical_enemies={}",
+        state.area,
+        state.turn,
+        state.expedition.enemies.len()
+    );
+    for (root, actor, global, visibility, inherited) in &actors {
+        info!(
+            "FIGURE root={root:?} kind={:?} enemy={:?} hp={} foot={:?} visibility={visibility:?} inherited={}",
+            actor.kind,
+            actor.enemy_id,
+            actor.hp,
+            global.translation(),
+            inherited.get()
+        );
+        for (label, entity) in [("card", actor.card), ("caster", actor.caster)] {
+            match cards.get(entity) {
+                Ok((mesh, material, local, global, visible, inherited, view, aabb, layers)) => {
+                    let texture = materials
+                        .get(&material.0)
+                        .and_then(|m| m.base_color_texture.as_ref())
+                        .and_then(|t| images.get(t))
+                        .map(|image| (image.width(), image.height()));
+                    info!(
+                        "FIGURE_PART entity={entity:?} role={label} mesh={:?} cpu_mesh={} vertices={:?} aabb={aabb:?} material={:?} material_loaded={} texture={texture:?} local={local:?} world={:?} determinant={} visibility={visible:?} inherited={} view={} layers={layers:?}",
+                        mesh.0.id(),
+                        meshes.contains(&mesh.0),
+                        meshes.get(&mesh.0).map(Mesh::count_vertices),
+                        material.0.id(),
+                        materials.contains(&material.0),
+                        global.translation(),
+                        global.affine().matrix3.determinant(),
+                        inherited.get(),
+                        view.get()
+                    );
+                }
+                Err(error) => {
+                    warn!("FIGURE_PART entity={entity:?} role={label} query_error={error:?}")
+                }
+            }
+        }
     }
 }

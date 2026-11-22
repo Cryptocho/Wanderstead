@@ -1,10 +1,14 @@
 mod book;
 mod controls;
+mod delve;
 mod figures;
 mod game;
 mod lens;
+mod map;
 mod runtime;
+mod spring;
 mod stage;
+mod tileview;
 
 use bevy::{
     prelude::*,
@@ -50,7 +54,7 @@ fn main() -> ExitCode {
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        title: "旅店外的李子 · Wanderstead".into(),
+                        title: "铜壶镇 · 第一股泉水 | Wanderstead".into(),
                         name: Some("Wanderstead".into()),
                         mode: WindowMode::BorderlessFullscreen(MonitorSelection::Current),
                         resolution: WindowResolution::new(2560., 1440.)
@@ -67,11 +71,16 @@ fn main() -> ExitCode {
         .add_plugins((
             controls::ControlsPlugin,
             lens::LensPlugin,
+            tileview::TileViewPlugin,
             stage::StagePlugin,
+            spring::SpringPlugin,
             figures::FiguresPlugin,
             book::BookPlugin,
             runtime::RuntimePlugin,
         ));
+    if std::env::var_os("WANDERSTEAD_GPU_PROFILE").is_some() {
+        app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
+    }
     match app.run() {
         AppExit::Success => ExitCode::SUCCESS,
         AppExit::Error(e) => ExitCode::from(e.get()),

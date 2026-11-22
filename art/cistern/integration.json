@@ -1,0 +1,209 @@
+{
+  "scene": "cistern/cistern.glb#Scene0",
+  "water_y": -0.22,
+  "floor_y": 0,
+  "lights": [
+    {
+      "name": "western_offering",
+      "position": [
+        -6.25,
+        1.24,
+        -5.32
+      ],
+      "color": [
+        1.0,
+        0.52,
+        0.2
+      ],
+      "range": 4.8,
+      "lumens": 2700,
+      "zone": "western moss archive"
+    },
+    {
+      "name": "tool_warm",
+      "position": [
+        -3.12,
+        1.08,
+        0.02
+      ],
+      "color": [
+        1.0,
+        0.49,
+        0.16
+      ],
+      "range": 4.3,
+      "lumens": 2300,
+      "zone": "western coffer"
+    },
+    {
+      "name": "saint_gold",
+      "position": [
+        -0.95,
+        1.24,
+        -4.32
+      ],
+      "color": [
+        1.0,
+        0.58,
+        0.26
+      ],
+      "range": 4.8,
+      "lumens": 3100,
+      "zone": "central spring shrine"
+    },
+    {
+      "name": "nave_gold",
+      "position": [
+        3.12,
+        1.09,
+        0.9
+      ],
+      "color": [
+        1.0,
+        0.53,
+        0.2
+      ],
+      "range": 4.5,
+      "lumens": 2400,
+      "zone": "central nave and pressure covers"
+    },
+    {
+      "name": "return_lantern",
+      "position": [
+        -2.96,
+        1.0,
+        5.0
+      ],
+      "color": [
+        1.0,
+        0.55,
+        0.24
+      ],
+      "range": 4.8,
+      "lumens": 2600,
+      "zone": "return stair approach"
+    },
+    {
+      "name": "east_lantern",
+      "position": [
+        9.1,
+        1.56,
+        -3.1
+      ],
+      "color": [
+        1.0,
+        0.62,
+        0.3
+      ],
+      "range": 4.5,
+      "lumens": 2400,
+      "zone": "eastern wheel altar"
+    },
+    {
+      "name": "east_amethyst",
+      "position": [
+        8.82,
+        1.55,
+        0.08
+      ],
+      "color": [
+        0.56,
+        0.34,
+        1.0
+      ],
+      "range": 3.3,
+      "lumens": 1050,
+      "zone": "east crystal annex",
+      "type": "crystal"
+    },
+    {
+      "name": "north_seep",
+      "position": [
+        5.5,
+        0.48,
+        -5.9
+      ],
+      "color": [
+        0.2,
+        0.65,
+        0.76
+      ],
+      "range": 5.0,
+      "lumens": 1700,
+      "zone": "north flooded channel",
+      "type": "seep"
+    },
+    {
+      "name": "west_seep",
+      "position": [
+        -8.5,
+        0.36,
+        -0.8
+      ],
+      "color": [
+        0.17,
+        0.62,
+        0.71
+      ],
+      "range": 5.2,
+      "lumens": 1450,
+      "zone": "western channel",
+      "type": "seep"
+    }
+  ],
+  "nodes": {
+    "tool_lid": {
+      "hinge_world": [
+        -6,
+        0.55,
+        -0.29
+      ],
+      "open_local_rotation_x": -1.7
+    },
+    "tonic_lid": {
+      "hinge_world": [
+        -5,
+        0.55,
+        -4.29
+      ],
+      "open_local_rotation_x": -1.7
+    },
+    "wheel_pickup": {
+      "position": [
+        6,
+        0.86,
+        -4
+      ],
+      "hide_descendants": true
+    }
+  },
+  "wall_height_rule": [
+    "z>=4: .48",
+    "x==-10 or x>=9: 1.15",
+    "south glyph != #: 2.15",
+    "otherwise .74"
+  ],
+  "wall_footprint": "integer cell +/- .5; carved north facade columns may reach 2.7",
+  "budget": {
+    "mesh_objects": 36,
+    "triangles": 111909,
+    "glb_bytes": 16198076
+  },
+  "grid_snapshot": [
+    "#####################",
+    "#~~##########~~~~~~##",
+    "#~~....######......##",
+    "#~~..!.##....#..R..##",
+    "#~~....#.....#.....##",
+    "#~~........P.......##",
+    "#~~....#.....#.....##",
+    "#~~.C..###P..#.....##",
+    "#~~....#.....#.~.~.##",
+    "#~~~~.~#.....#P....##",
+    "#~~................##",
+    "#~~.............#####",
+    "########..<..########",
+    "########.....########",
+    "#####################"
+  ]
+}

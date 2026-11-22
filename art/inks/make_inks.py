@@ -35,7 +35,6 @@ juice = material('Ink_Fresh_Plum_Juice', (.32, .004, .035), .23)
 flesh = material('Ink_Fresh_Plum_Flesh', (.48, .005, .065), .35)
 skin = material('Ink_Plum_Purple_Skin', (.115, .012, .11), .4)
 wood = material('Ink_Spoon_Wood', (.26, .095, .034), .7)
-marker = material('Ink_Marker', (1, 1, 1), 1)
 
 
 def mesh(name, vertices, faces, mats, indices=None):
@@ -143,42 +142,6 @@ handle.scale=(.24,.025,.022)
 handle.rotation_euler[1]=-.075
 handle.data.materials.append(wood)
 export('spoon',[spoon,handle])
-
-
-def flat_rect(verts,faces,x,y,w,h):
-    n=len(verts)
-    verts.extend([(x-w/2,y-h/2,0),(x+w/2,y-h/2,0),
-                  (x+w/2,y+h/2,0),(x-w/2,y+h/2,0)])
-    faces.append((n,n+1,n+2,n+3))
-
-
-verts,faces=[],[]
-for x in (-.42,.42):
-    for y in (-.42,.42):
-        flat_rect(verts,faces,x-math.copysign(.07,x),y,.17,.028)
-        flat_rect(verts,faces,x,y-math.copysign(.07,y),.028,.17)
-export('brackets',[mesh('Ground_Target_Brackets',verts,faces,[marker])])
-
-verts,faces=[],[]
-for i in range(48):
-    if i%12 in (10,11):
-        continue
-    a,b=i*math.tau/48,(i+1)*math.tau/48
-    n=len(verts)
-    verts.extend([(r*math.cos(t),r*math.sin(t),0)
-                  for r,t in ((.255,a),(.28,a),(.28,b),(.255,b))])
-    faces.append((n,n+1,n+2,n+3))
-export('ring',[mesh('Current_Position_Ring',verts,faces,[marker])])
-# Blender +Y exports to world -Z (north), the canonical facing direction.
-export('facing',[mesh('Current_Facing', [(-.08,.32,0),(.08,.32,0),(0,.45,0)],[(0,1,2)],[marker])])
-verts,faces=[],[]
-flat_rect(verts,faces,0,0,.16,.045)
-export('dash',[mesh('Throw_Range_Dash',verts,faces,[marker])])
-bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=1,radius=.024)
-dot=bpy.context.object
-dot.name='Throw_Arc_Dot'
-dot.data.materials.append(marker)
-export('dot',[dot])
 
 # Asset-maker inspection: arrange an actual serving and render it with real light/shadows.
 for ob in [bowl,curd,stain,spoon,handle]+parts:

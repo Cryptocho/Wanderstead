@@ -2,11 +2,18 @@ Wanderstead travel stationery
 
 All PNG illustrations, paper fibres, oak grain, leather binding and copper fittings:
 original procedural artwork authored for this project in tools/make_book.py.
-tools/make_book_road.py derives the compact roadside strip and field tag from
-the same original paper grain and binding; the complete folio texture is retained.
-Deterministic seed: 49018. No third-party game artwork or photographs used.
-Packed UI uses fixed-size PNG panels and a nine-sliced button. No transparent panel fill.
-art/book/road-reference.png is a material/typesetting reference, NOT a game screenshot.
+tools/make_adventure_book.py authors the restrained charcoal-glass HUD and
+copper-edged action buttons (seed 231122), used by the expedition UI in book.rs.
+tools/make_book_road.py retains the earlier compact paper studies from the same
+original paper grain and binding; the complete folio is used for modal pages.
+The HUD glass has deliberate translucency; journal paper is opaque.
+art/book/*reference.png are authoring/material sheets, NOT game screenshots.
+No third-party game artwork or photographs are used.
+The corner HUD leaves the lower center open: Town has fruit/wait actions;
+B1 has guard/skill/medicine/wait actions. The top-right journal is shared.
+Runtime nodes, pointer exclusion and authoring sheets consume the HudPart
+rectangles in src/book.rs. Page::Barter is an opaque modal fruit-for-tonic trade.
+The traveler portrait is supplied by the project's figures artwork.
 
 Font: Fusion Pixel Font, TakWolf and upstream contributors.
 Unmodified fusion-pixel-12px-proportional-zh_hans.ttf, release 2026.11.10.
@@ -19,6 +26,7 @@ archive accompany this face under licenses/ (OFL.txt and LICENSES/).
 
 Rebuild artwork: uv run --with pillow python tools/make_book.py
 Rebuild compact rail only: uv run --with pillow python tools/make_book_road.py
+Rebuild adventure materials: uv run --with pillow python tools/make_adventure_book.py
 Glyph coverage: uv run --with fonttools python tools/make_book_glyphs.py
 The glyph report checks all Hanzi, punctuation, Latin characters and digits used
-by src/book.rs and src/game.rs. Main owns runtime and screenshot acceptance.
+by src/book.rs, src/game.rs and src/delve.rs. Main owns runtime and screenshot acceptance.

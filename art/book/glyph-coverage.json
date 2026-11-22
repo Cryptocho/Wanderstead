@@ -1,11 +1,12 @@
 {
   "font": "Fusion Pixel 12px Proportional zh_hans 2026.11.10",
   "sha256": "7e93fedda2c55bb37badb2262aaf43b08e3cb5976a0e3de2d90986ce59fe902e",
-  "checked_characters": 382,
+  "checked_characters": 659,
   "font_cmap_entries": 38213,
   "missing": [],
   "checked_sources": [
     "src/book.rs",
-    "src/game.rs"
+    "src/game.rs",
+    "src/delve.rs"
   ]
 }

@@ -1,17 +1,17 @@
-//! The orchard's real PBR surfaces, daylight, and state-driven world feedback.
-//! Props are original Blender exports; regenerate with art/inks/make_inks.py.
+//! Shared lit scenery, distortion-free pixel materials and diegetic interactions.
 use std::collections::HashMap;
 
 use bevy::{
     core_pipeline::{Skybox, bloom::Bloom},
-    pbr::{
-        CascadeShadowConfigBuilder, DirectionalLightShadowMap, ExtendedMaterial, MaterialExtension,
-    },
+    pbr::{ExtendedMaterial, MaterialExtension},
     prelude::*,
-    render::render_resource::{AsBindGroup, ShaderRef, TextureViewDescriptor, TextureViewDimension},
+    render::render_resource::{
+        AsBindGroup, ShaderRef, TextureViewDescriptor, TextureViewDimension,
+    },
 };
 
 use crate::{Frame, game::*};
+use crate::{delve::Quest, map::Area};
 
 pub struct StagePlugin;
 
@@ -20,19 +20,21 @@ impl Plugin for StagePlugin {
         app.init_resource::<PaletteState>()
             .init_resource::<SurfaceCache>()
             .init_resource::<StageAnimation>()
+            .add_systems(PreStartup, create_regions)
             .add_plugins(MaterialPlugin::<WorldMaterial>::default())
             .add_systems(Startup, setup_stage)
             .add_systems(
                 Update,
                 (
                     toggle_palette,
+                    switch_region,
                     add_atmosphere,
                     bind_sky.run_if(resource_exists::<MorningSky>),
                     bind_stage_surfaces,
                     bind_tree_nodes,
                     animate_trees,
                     breakfast_feedback,
-                    world_markers,
+                    expedition_props,
                     sync_palette,
                 )
                     .chain()
@@ -55,9 +57,9 @@ impl Default for PaletteState {
     fn default() -> Self {
         Self {
             enabled: true,
-            world_texels: 24.0,
+            world_texels: 48.0,
             light_steps: 4.0,
-            dither_strength: 0.18,
+            dither_strength: 0.13,
         }
     }
 }
@@ -82,6 +84,11 @@ pub struct WorldPalette {
     pub focus: Vec4,
     #[uniform(100)]
     pub eye: Vec4,
+    /// 1 = town flags, 2 = cistern flags. Other surfaces keep their own patina.
+    #[uniform(100)]
+    pub floor_style: Vec4,
+    #[texture(101)]
+    pub site: Handle<Image>,
 }
 
 impl MaterialExtension for WorldPalette {
@@ -121,26 +128,155 @@ struct Portion {
     age: f32,
 }
 
-#[derive(Component)]
-enum WorldMarker {
-    Position,
-    Facing,
-    Cursor,
-    CursorWash,
-    Range(IVec2),
-    Arc(u8),
+/// Lights, meshes and effects for both floors share local tile coordinates.
+#[derive(Resource, Clone, Copy)]
+pub(crate) struct Regions {
+    pub town: Entity,
+    pub cistern: Entity,
 }
-
+impl Regions {
+    pub fn root(self, area: Area) -> Entity {
+        match area {
+            Area::Town => self.town,
+            Area::Cistern => self.cistern,
+        }
+    }
+}
 #[derive(Resource)]
 struct StageProps {
     plum: Handle<Scene>,
-    position: Handle<StandardMaterial>,
-    inspect: Handle<StandardMaterial>,
-    valid: Handle<StandardMaterial>,
-    invalid: Handle<StandardMaterial>,
-    range: Handle<StandardMaterial>,
-    muted: Handle<StandardMaterial>,
-    wash: Handle<StandardMaterial>,
+}
+
+#[derive(Resource)]
+struct SiteEdges(Handle<Image>);
+
+/// Four edge bits per tile: masonry contact, water, and the fountain apron.
+/// This is baked once from the same topology used by the movers and the mouse.
+fn site_edges(images: &mut Assets<Image>) -> SiteEdges {
+    use crate::map::{self, HEIGHT, WIDTH};
+    use bevy::{
+        asset::RenderAssetUsages,
+        render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+    };
+    let mut data = Vec::with_capacity(WIDTH * HEIGHT * 8);
+    for area in [Area::Town, Area::Cistern] {
+        for z in map::MIN.y..=map::MAX.y {
+            for x in map::MIN.x..=map::MAX.x {
+                let mut wall = 0u8;
+                let mut water = 0;
+                let mut rim = 0;
+                for (i, d) in [IVec2::NEG_X, IVec2::X, IVec2::NEG_Y, IVec2::Y]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let v = map::glyph(area, IVec2::new(x, z) + d);
+                    if matches!(
+                        v,
+                        b'#' | b'C' | b'!' | b'R' | b'b' | b'T' | b't' | b'F' | b'f'
+                    ) {
+                        wall |= 1 << i;
+                    }
+                    if v == b'~' {
+                        water |= 1 << i;
+                    }
+                    if matches!(v, b'f' | b'F') {
+                        rim |= 1 << i;
+                    }
+                }
+                data.extend_from_slice(&[wall, water, rim, 255]);
+            }
+        }
+    }
+    SiteEdges(images.add(Image::new(
+        Extent3d {
+            width: WIDTH as u32,
+            height: (2 * HEIGHT) as u32,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    )))
+}
+
+#[derive(Component)]
+enum OldWorks {
+    Wheel,
+    ToolLid(Quat),
+    TonicLid(Quat),
+}
+
+fn create_regions(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    commands.insert_resource(site_edges(&mut images));
+    let town = commands
+        .spawn((
+            Name::new("Copper Kettle Square"),
+            Transform::default(),
+            Visibility::Inherited,
+        ))
+        .id();
+    let cistern = commands
+        .spawn((
+            Name::new("Spring cistern B1"),
+            Transform::default(),
+            Visibility::Hidden,
+        ))
+        .id();
+    commands.insert_resource(Regions { town, cistern });
+}
+
+fn switch_region(
+    g: Res<Outing>,
+    roots: Res<Regions>,
+    mut visible: Query<&mut Visibility>,
+    mut old: Local<Option<Area>>,
+) {
+    if *old == Some(g.area) {
+        return;
+    }
+    *old = Some(g.area);
+    for area in [Area::Town, Area::Cistern] {
+        if let Ok(mut v) = visible.get_mut(roots.root(area)) {
+            *v = if g.area == area {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+        }
+    }
+}
+
+fn expedition_props(
+    g: Res<Outing>,
+    mut props: Query<(&OldWorks, &mut Transform, &mut Visibility)>,
+) {
+    for (part, mut t, mut vis) in &mut props {
+        match part {
+            OldWorks::Wheel => {
+                let show = if g.expedition.quest == Quest::Seeking {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+                vis.set_if_neq(show);
+            }
+            OldWorks::ToolLid(rest) | OldWorks::TonicLid(rest) => {
+                let open = match part {
+                    OldWorks::ToolLid(_) => g.expedition.seal_open,
+                    _ => g.expedition.tonic_open,
+                };
+                let q = if open {
+                    *rest * Quat::from_rotation_x(-1.65)
+                } else {
+                    *rest
+                };
+                if t.rotation != q {
+                    t.rotation = q;
+                }
+            }
+        }
+    }
 }
 
 #[derive(Resource)]
@@ -171,147 +307,74 @@ const BOWL_POSITION: Vec3 = Vec3::new(-3.80, 0.79, 3.08);
 #[derive(Resource)]
 struct MorningSky(Handle<Image>);
 
-fn setup_stage(
-    mut commands: Commands,
-    assets: Res<AssetServer>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
+fn setup_stage(mut commands: Commands, assets: Res<AssetServer>, roots: Res<Regions>) {
     commands.insert_resource(MorningSky(assets.load("inks/morning-sky.png")));
-    commands.insert_resource(ClearColor(Color::srgb(0.61, 0.76, 0.85)));
-    commands.insert_resource(AmbientLight {
-        color: Color::srgb(0.80, 0.89, 1.0),
-        brightness: 7900.0,
-        ..default()
-    });
-    commands.insert_resource(DirectionalLightShadowMap { size: 2048 });
     commands.spawn((
-        Name::new("Late morning sun"),
-        DirectionalLight {
-            color: Color::srgb(1.0, 0.94, 0.82),
-            illuminance: 65_000.0,
-            shadows_enabled: true,
-            shadow_depth_bias: 0.008,
-            shadow_normal_bias: 0.65,
-            ..default()
-        },
-        Transform::from_xyz(-18.0, 33.0, 23.0).looking_at(Vec3::ZERO, Vec3::Y),
-        CascadeShadowConfigBuilder {
-            num_cascades: 4,
-            minimum_distance: 0.1,
-            first_cascade_far_bound: 13.0,
-            maximum_distance: 95.0,
-            overlap_proportion: 0.2,
-        }
-        .build(),
-    ));
-    commands.spawn((
-        Name::new("Orchard and roadside inn"),
+        Name::new("Town street and shops"),
+        ChildOf(roots.town),
         SceneRoot(assets.load("lanes/orchard.glb#Scene0")),
         StageRoot(true),
     ));
     commands.spawn((
+        Name::new("Old springworks"),
+        ChildOf(roots.cistern),
+        SceneRoot(assets.load("cistern/cistern.glb#Scene0")),
+        StageRoot(true),
+    ));
+    for (area, path) in [
+        (Area::Town, "market/market-trimmings.glb#Scene0"),
+        (Area::Cistern, "market/spring-trimmings.glb#Scene0"),
+    ] {
+        commands.spawn((
+            SceneRoot(assets.load(path)),
+            ChildOf(roots.root(area)),
+            StageRoot(true),
+        ));
+    }
+    commands.spawn((
         Name::new("Breakfast bowl on the table"),
+        ChildOf(roots.town),
         SceneRoot(assets.load("inks/bowl.glb#Scene0")),
         Transform::from_translation(BOWL_POSITION),
         StageRoot(false),
     ));
     commands.spawn((
         SceneRoot(assets.load("inks/curd.glb#Scene0")),
+        ChildOf(roots.town),
         Transform::from_translation(BOWL_POSITION + Vec3::Y * 0.153),
         StageRoot(false),
         Curd,
     ));
     commands.spawn((
         SceneRoot(assets.load("inks/juice.glb#Scene0")),
+        ChildOf(roots.town),
         Transform::from_translation(BOWL_POSITION + Vec3::Y * 0.16),
         Visibility::Hidden,
         StageRoot(false),
         Juice,
     ));
     commands.spawn((
+        ChildOf(roots.town),
         SceneRoot(assets.load("inks/spoon.glb#Scene0")),
         Transform::from_translation(BOWL_POSITION + Vec3::new(0.14, 0.153, 0.11))
             .with_rotation(Quat::from_rotation_y(-0.35) * Quat::from_rotation_z(0.22)),
         StageRoot(false),
         Spoon,
     ));
-    let wash = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.10, 0.075, 0.16, 0.55),
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        ..default()
-    });
-    let mut marker_material = |color: Color| {
-        materials.add(StandardMaterial {
-            base_color: color,
-            unlit: true,
-            cull_mode: None,
-            ..default()
-        })
-    };
-    let props = StageProps {
+    commands.insert_resource(StageProps {
         plum: assets.load("inks/plum-cut.glb#Scene0"),
-        position: marker_material(Color::srgb(0.85, 0.74, 0.46)),
-        inspect: marker_material(Color::srgb(0.45, 0.82, 0.95)),
-        valid: marker_material(Color::srgb(0.98, 0.91, 0.62)),
-        invalid: marker_material(Color::srgb(0.96, 0.35, 0.29)),
-        range: marker_material(Color::srgb(0.78, 0.72, 0.46)),
-        muted: marker_material(Color::srgb(0.39, 0.43, 0.38)),
-        wash,
-    };
-    let ring: Handle<Mesh> = assets.load("inks/ring.glb#Mesh0/Primitive0");
-    let facing: Handle<Mesh> = assets.load("inks/facing.glb#Mesh0/Primitive0");
-    let brackets: Handle<Mesh> = assets.load("inks/brackets.glb#Mesh0/Primitive0");
-    let dash: Handle<Mesh> = assets.load("inks/dash.glb#Mesh0/Primitive0");
-    let dot: Handle<Mesh> = assets.load("inks/dot.glb#Mesh0/Primitive0");
-    for (kind, mesh) in [
-        (WorldMarker::Position, ring),
-        (WorldMarker::Facing, facing),
-        (WorldMarker::Cursor, brackets),
-        (WorldMarker::CursorWash, meshes.add(Plane3d::default().mesh().size(0.9, 0.9))),
-    ] {
-        commands.spawn((
-            kind,
-            Mesh3d(mesh),
-            MeshMaterial3d(props.position.clone()),
-            Transform::default(),
-            Visibility::Hidden,
-            bevy::pbr::NotShadowCaster,
-            Inked,
-        ));
-    }
-    // A sparse perimeter, not a painted grid. Only the selected cell has brackets.
-    for x in -3_i32..=3 {
-        for z in -3_i32..=3 {
-            if x.abs() + z.abs() == 3 {
-                commands.spawn((
-                    WorldMarker::Range(IVec2::new(x, z)),
-                    Mesh3d(dash.clone()),
-                    MeshMaterial3d(props.range.clone()),
-                    Transform::default(),
-                    Visibility::Hidden,
-                    Inked,
-                ));
-            }
-        }
-    }
-    for i in 1..=11 {
-        commands.spawn((
-            WorldMarker::Arc(i),
-            Mesh3d(dot.clone()),
-            MeshMaterial3d(props.valid.clone()),
-            Transform::default(),
-            Visibility::Hidden,
-            Inked,
-        ));
-    }
-    commands.insert_resource(props);
+    });
 }
 
 fn add_atmosphere(mut commands: Commands, cameras: Query<Entity, Added<Camera3d>>) {
     for entity in &cameras {
         commands.entity(entity).insert((
+            bevy::pbr::ClusterConfig::FixedZ {
+                total: 576,
+                z_slices: 4,
+                z_config: default(),
+                dynamic_resizing: true,
+            },
             DistanceFog {
                 color: Color::srgb(0.61, 0.76, 0.85),
                 directional_light_color: Color::srgba(1.0, 0.86, 0.65, 0.18),
@@ -322,7 +385,7 @@ fn add_atmosphere(mut commands: Commands, cameras: Query<Entity, Added<Camera3d>
                 },
             },
             Bloom {
-                intensity: 0.035,
+                intensity: 0.085,
                 ..Bloom::NATURAL
             },
         ));
@@ -335,13 +398,19 @@ fn bind_sky(
     mut images: ResMut<Assets<Image>>,
     camera: Single<Entity, With<Camera3d>>,
 ) {
-    let Some(image) = images.get_mut(&sky.0) else { return };
+    let Some(image) = images.get_mut(&sky.0) else {
+        return;
+    };
     image.reinterpret_stacked_2d_as_array(6);
     image.texture_view_descriptor = Some(TextureViewDescriptor {
         dimension: Some(TextureViewDimension::Cube),
         ..default()
     });
-    commands.entity(*camera).insert(Skybox { image: sky.0.clone(), brightness: 6400.0, ..default() });
+    commands.entity(*camera).insert(Skybox {
+        image: sky.0.clone(),
+        brightness: 6400.0,
+        ..default()
+    });
     commands.remove_resource::<MorningSky>();
 }
 
@@ -363,16 +432,28 @@ fn stage_owner(
 
 fn bind_stage_surfaces(
     mut commands: Commands,
-    surfaces: Query<(Entity, &MeshMaterial3d<StandardMaterial>), Without<Inked>>,
+    surfaces: Query<
+        (
+            Entity,
+            &MeshMaterial3d<StandardMaterial>,
+            &Mesh3d,
+            Option<&bevy::gltf::GltfMaterialName>,
+        ),
+        Without<Inked>,
+    >,
     roots: Query<&StageRoot>,
     parents: Query<&ChildOf>,
     originals: Res<Assets<StandardMaterial>>,
     mut materials: ResMut<Assets<WorldMaterial>>,
     mut cache: ResMut<SurfaceCache>,
     palette: Res<PaletteState>,
+    site: Res<SiteEdges>,
+    names: Query<&Name>,
+    flowing: Single<Entity, With<crate::spring::Refilled>>,
 ) {
-    for (entity, source) in &surfaces {
+    for (entity, source, mesh, name) in &surfaces {
         let Some(cutaway) = stage_owner(entity, &roots, &parents) else {
+            commands.entity(entity).insert(Inked);
             continue;
         };
         let Some(base) = originals.get(&source.0) else {
@@ -382,18 +463,52 @@ fn bind_stage_surfaces(
             .0
             .entry(source.0.id())
             .or_insert_with(|| {
-                // Clone every actual glTF surface parameter. This preserves alpha clip,
-                // copper's metal/roughness, texture maps and double-sided leaves.
+                let mut base = base.clone();
+                if name.is_some_and(|n| n.0 == "Lane_Glass") {
+                    base.emissive_texture = base.base_color_texture.clone();
+                    base.emissive = LinearRgba::rgb(2.1, 1.12, 0.37);
+                }
                 materials.add(ExtendedMaterial {
-                    base: base.clone(),
+                    base,
                     extension: WorldPalette {
                         settings: palette.uniform(),
                         focus: Vec4::new(0.0, 0.85, 0.0, if cutaway { 1.0 } else { 0.0 }),
                         eye: Vec4::ZERO,
+                        floor_style: Vec4::new(
+                            match name.map(|m| m.0.as_str()) {
+                                Some("Lane_Paving") => 1.,
+                                Some("Wet paving" | "Ivory mosaic") => 2.,
+                                _ => 0.,
+                            },
+                            0.,
+                            0.,
+                            0.,
+                        ),
+                        site: site.0.clone(),
                     },
                 })
             })
             .clone();
+        // The workshop's actual wheel fits the bronze socket: reuse its mesh
+        // and material, so taking it and reinstalling it cannot change its design.
+        let mut ancestor = entity;
+        while let Ok(parent) = parents.get(ancestor) {
+            ancestor = parent.parent();
+            if names
+                .get(ancestor)
+                .is_ok_and(|n| n.as_str() == "wheel_pickup")
+            {
+                commands.spawn((
+                    Name::new("Returned bronze handwheel"),
+                    Mesh3d(mesh.0.clone()),
+                    MeshMaterial3d(material.clone()),
+                    Transform::from_xyz(4., 1.03, 2.40).with_rotation(Quat::from_rotation_z(0.23)),
+                    ChildOf(*flowing),
+                    Inked,
+                ));
+                break;
+            }
+        }
         commands
             .entity(entity)
             .remove::<MeshMaterial3d<StandardMaterial>>()
@@ -426,6 +541,8 @@ fn sync_palette(
             extension.settings != settings
                 || extension.focus.truncate() != focus
                 || extension.eye != eye
+                || extension.floor_style.y
+                    != (outing.expedition.quest == Quest::Restored) as u8 as f32
         });
         if !changed {
             continue;
@@ -434,6 +551,8 @@ fn sync_palette(
             material.extension.settings = settings;
             material.extension.focus = focus.extend(material.extension.focus.w);
             material.extension.eye = eye;
+            material.extension.floor_style.y =
+                (outing.expedition.quest == Quest::Restored) as u8 as f32;
         }
     }
 }
@@ -450,6 +569,19 @@ fn bind_tree_nodes(
         }
         commands.entity(entity).insert(TreeNodeBound);
         match name.as_str() {
+            "wheel_pickup" => {
+                commands.entity(entity).insert(OldWorks::Wheel);
+            }
+            "tool_lid" => {
+                commands
+                    .entity(entity)
+                    .insert(OldWorks::ToolLid(transform.rotation));
+            }
+            "tonic_lid" => {
+                commands
+                    .entity(entity)
+                    .insert(OldWorks::TonicLid(transform.rotation));
+            }
             "canopy_main" => {
                 commands.entity(entity).insert(TreeSway {
                     rest: *transform,
@@ -523,6 +655,7 @@ fn breakfast_feedback(
     outing: Res<Outing>,
     interface: Res<Interface>,
     props: Res<StageProps>,
+    roots: Res<Regions>,
     time: Res<Time>,
     mut animation: ResMut<StageAnimation>,
     mut portions: Query<
@@ -550,6 +683,7 @@ fn breakfast_feedback(
         for index in animation.portion_count..count {
             commands.spawn((
                 Name::new(format!("Fresh cut plum {}", index + 1)),
+                ChildOf(roots.town),
                 SceneRoot(props.plum.clone()),
                 Transform::from_translation(portion_position(index, count) + Vec3::Y * 0.30),
                 Portion { index, age: 0.0 },
@@ -602,88 +736,5 @@ fn breakfast_feedback(
             BOWL_POSITION + Vec3::new(0.14 + 0.045 * scoop, 0.153 + 0.115 * scoop, 0.11);
         transform.rotation =
             Quat::from_rotation_y(-0.35) * Quat::from_rotation_z(0.22 - 0.35 * scoop);
-    }
-}
-
-fn world_markers(
-    outing: Res<Outing>,
-    interface: Res<Interface>,
-    props: Res<StageProps>,
-    mut markers: Query<(
-        &WorldMarker,
-        &mut Transform,
-        &mut Visibility,
-        &mut MeshMaterial3d<StandardMaterial>,
-    )>,
-) {
-    if !outing.is_changed() && !interface.is_changed() { return; }
-    let aim = interface.page == Page::Aim;
-    let look = interface.page == Page::Look;
-    let cursor = interface.cursor;
-    let legal = outing.can_toss(cursor);
-    let target_material = if look {
-        &props.inspect
-    } else if legal {
-        &props.valid
-    } else {
-        &props.invalid
-    };
-    for (kind, mut transform, mut visibility, mut material) in &mut markers {
-        transform.rotation = Quat::IDENTITY;
-        let visible = match kind {
-            WorldMarker::Position => {
-                transform.translation = ground(outing.player) + Vec3::Y * 0.012;
-                material.0 = props.position.clone();
-                interface.page == Page::Roam || aim || look
-            }
-            WorldMarker::Facing => {
-                transform.translation = ground(outing.player) + Vec3::Y * 0.014;
-                let facing = outing.facing;
-                transform.rotation =
-                    Quat::from_rotation_y(-(facing.x as f32).atan2(-facing.y as f32));
-                material.0 = props.position.clone();
-                interface.page == Page::Roam || aim || look
-            }
-            WorldMarker::Cursor => {
-                transform.translation = ground(cursor) + Vec3::Y * 0.067;
-                material.0 = target_material.clone();
-                aim || look
-            }
-            WorldMarker::CursorWash => {
-                transform.translation = ground(cursor) + Vec3::Y * 0.060;
-                material.0 = props.wash.clone();
-                aim || look
-            }
-            WorldMarker::Range(offset) => {
-                let cell = outing.player + *offset;
-                transform.translation = ground(cell) + Vec3::Y * 0.014;
-                transform.rotation = Quat::from_rotation_y(if offset.x == 0 {
-                    0.0
-                } else if offset.y == 0 {
-                    std::f32::consts::FRAC_PI_2
-                } else {
-                    (offset.x * offset.y).signum() as f32 * std::f32::consts::FRAC_PI_4
-                });
-                material.0 = if outing.can_toss(cell) {
-                    props.range.clone()
-                } else {
-                    props.muted.clone()
-                };
-                aim && walkable(cell)
-            }
-            WorldMarker::Arc(index) => {
-                let t = *index as f32 / 12.0;
-                let start = ground(outing.player) + Vec3::Y * 0.45;
-                let end = ground(cursor) + Vec3::Y * 0.12;
-                transform.translation = start.lerp(end, t) + Vec3::Y * (4.0 * t * (1.0 - t) * 1.1);
-                material.0 = target_material.clone();
-                aim && (cursor - outing.player).abs().element_sum() <= 3 && cursor != outing.player
-            }
-        };
-        *visibility = if visible {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
     }
 }

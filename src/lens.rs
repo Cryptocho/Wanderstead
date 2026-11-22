@@ -1,4 +1,4 @@
-//! Fixed north-facing perspective camera: reversible physical dolly and crane.
+//! North-facing, near-orthographic exploration with a continuous eye-level dolly.
 use bevy::{
     core_pipeline::{
         dof::{DepthOfField, DepthOfFieldMode},
@@ -15,6 +15,7 @@ use bevy::{
 use crate::{
     figures::PlayerVisual,
     game::{Outing, ground},
+    map::Area,
 };
 
 pub struct LensPlugin;
@@ -34,8 +35,8 @@ impl Default for LensState {
     fn default() -> Self {
         Self {
             zoom: DEFAULT_ZOOM,
-            pitch_deg: 56.0,
-            distance: 27.0,
+            pitch_deg: 54.0,
+            distance: 360.0,
             goal_zoom: DEFAULT_ZOOM,
         }
     }
@@ -60,26 +61,37 @@ impl Plugin for LensPlugin {
 
 const DEFAULT_ZOOM: f32 = 0.72;
 const EYE_HEIGHT: f32 = 1.34;
-const COMPOSITION: Vec3 = Vec3::new(0.0, 0.60, -0.40);
+const COMPOSITION: Vec3 = Vec3::new(0.0, 0.66, -2.0);
 
 fn smooth(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn geometry(zoom: f32) -> (f32, f32, f32) {
+// Varying distance and FOV together gives a continuous orthographic-to-perspective
+// transition without a projection-type threshold.
+fn geometry(zoom: f32) -> (f32, f32, f32, f32) {
     if zoom <= DEFAULT_ZOOM {
         let t = smooth(zoom / DEFAULT_ZOOM);
-        (56.0 * t, 5.2_f32.lerp(27.0, t), t)
+        (
+            54.0 * t,
+            4.8 * (360.0_f32 / 4.8).powf(t),
+            3.8 * (13.6_f32 / 3.8).powf(t),
+            t,
+        )
     } else {
         let t = smooth((zoom - DEFAULT_ZOOM) / (1.0 - DEFAULT_ZOOM));
-        (56.0_f32.lerp(62.0, t), 27.0_f32.lerp(37.0, t), 1.0)
+        (
+            54.0_f32.lerp(61.0, t),
+            360.0_f32.lerp(500.0, t),
+            13.6_f32.lerp(19.0, t),
+            1.0,
+        )
     }
 }
 
-fn target(foot: Vec3, wide: f32) -> Vec3 {
-    // The inn and orchard share the default frame; approaching hands tracking
-    // completely to the animated foot, then raises the aim to the traveler's eye.
-    let overview = COMPOSITION.lerp(foot + Vec3::new(0.0, 0.55, -1.0), 0.28);
+fn target(foot: Vec3, wide: f32, area: Area) -> Vec3 {
+    let follow = if area == Area::Cistern { 0.67 } else { 0.30 };
+    let overview = COMPOSITION.lerp(foot + Vec3::new(0.0, 0.30, -1.1), follow);
     (foot + Vec3::Y * EYE_HEIGHT).lerp(overview, wide)
 }
 
@@ -89,9 +101,9 @@ fn viewpoint(target: Vec3, pitch_deg: f32, distance: f32) -> Transform {
         .looking_at(target, Vec3::Y)
 }
 
-fn aspect_distance(distance: f32, window: &Window) -> f32 {
+fn aspect_span(span: f32, window: &Window) -> f32 {
     let aspect = window.width() / window.height().max(1.0);
-    distance * (1.40 / aspect.max(0.45)).max(1.0)
+    span * (1.50 / aspect.max(0.45)).max(1.0)
 }
 
 fn install_camera(
@@ -100,15 +112,15 @@ fn install_camera(
     mut state: ResMut<LensState>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) {
-    let (pitch, distance, wide) = geometry(state.zoom);
+    let (pitch, distance, span, wide) = geometry(state.zoom);
     state.pitch_deg = pitch;
-    state.distance = aspect_distance(distance, &window);
+    state.distance = distance;
     let foot = ground(outing.player);
-    let pose = viewpoint(target(foot, wide), pitch, state.distance);
+    let pose = viewpoint(target(foot, wide, outing.area), pitch, distance);
     let focal_distance = (foot - pose.translation).dot(*pose.forward()).max(0.2);
     // StagePlugin owns the lighting, bloom and distance fog on this camera.
     commands.spawn((
-        Name::new("Fixed north-facing dolly/crane"),
+        Name::new("North-facing continuous orthographic dolly"),
         Camera3d::default(),
         Camera {
             hdr: true,
@@ -116,9 +128,9 @@ fn install_camera(
         },
         IsDefaultUiCamera,
         Projection::Perspective(PerspectiveProjection {
-            fov: 34.0_f32.to_radians(),
-            near: 0.08,
-            far: 220.0,
+            fov: (aspect_span(span, &window) / (2.0 * distance)).atan() * 2.0,
+            near: 0.06,
+            far: 1200.0,
             ..default()
         }),
         // Meter the painted mids, including the cloth and the shaded inn porch.
@@ -129,10 +141,10 @@ fn install_camera(
         DepthOfField {
             mode: DepthOfFieldMode::Gaussian,
             focal_distance,
-            sensor_height: 0.072,
-            aperture_f_stops: 4.0,
-            max_circle_of_confusion_diameter: 4.0,
-            max_depth: 180.0,
+            sensor_height: 0.180,
+            aperture_f_stops: 1.65,
+            max_circle_of_confusion_diameter: 9.0,
+            max_depth: 1000.0,
         },
         pose,
     ));
@@ -146,7 +158,11 @@ fn move_camera(
     mut state: ResMut<LensState>,
     window: Single<&Window, With<PrimaryWindow>>,
     player: Query<&Transform, (With<PlayerVisual>, Without<Camera3d>)>,
-    camera: Single<(&mut Transform, &mut DepthOfField), (With<Camera3d>, Without<PlayerVisual>)>,
+    mut previous_area: Local<Option<Area>>,
+    camera: Single<
+        (&mut Transform, &mut Projection, &mut DepthOfField),
+        (With<Camera3d>, Without<PlayerVisual>),
+    >,
 ) {
     let lines = match scroll.unit {
         MouseScrollUnit::Line => scroll.delta.y,
@@ -165,18 +181,28 @@ fn move_camera(
     if (state.zoom - state.goal_zoom).abs() < 0.0002 {
         state.zoom = state.goal_zoom;
     }
-    let (pitch, distance, wide) = geometry(state.zoom);
+    let (pitch, distance, span, wide) = geometry(state.zoom);
     state.pitch_deg = pitch;
-    state.distance = aspect_distance(distance, &window);
-    // Read the rendered interpolation, not the destination tile: this keeps the
-    // traveler in the same place in frame throughout an action at close range.
-    let foot = player
-        .single()
-        .map_or_else(|_| ground(outing.player), |pose| pose.translation);
-    let (mut pose, mut dof) = camera.into_inner();
-    *pose = viewpoint(target(foot, wide), state.pitch_deg, state.distance);
-    // Screen-aligned painted bodies share their foot's view-space depth.
+    state.distance = distance;
+    let changed_area = *previous_area != Some(outing.area);
+    *previous_area = Some(outing.area);
+    let foot = if changed_area {
+        ground(outing.player)
+    } else {
+        player
+            .single()
+            .map_or_else(|_| ground(outing.player), |pose| pose.translation)
+    };
+    let (mut pose, mut projection, mut dof) = camera.into_inner();
+    *pose = viewpoint(target(foot, wide, outing.area), pitch, distance);
+    if let Projection::Perspective(p) = &mut *projection {
+        p.fov = (aspect_span(span, &window) / (2.0 * distance)).atan() * 2.0;
+    }
     dof.focal_distance = (foot - pose.translation)
         .dot(*pose.forward())
-        .clamp(0.2, 180.0);
+        .clamp(0.2, 1000.0);
+    // Tilt-shift depth separation belongs to overhanging roofs and the far arcade.
+    // At eye level use a less extreme lens so a nearby target remains readable.
+    dof.sensor_height = 0.045_f32.lerp(0.180, wide);
+    dof.aperture_f_stops = 3.8_f32.lerp(1.65, wide);
 }

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Rebuild original generated character atlases. Requires Pillow >= 10.
+"""Export original short-proportioned JRPG art, without anatomical rescaling.
+
 Run from repository root: python tools/make_figures.py
-Inputs and rights/provenance: art/figures/source/, art/figures/RIGHTS.txt.
-No network access; all exported art has binary transparency and shared palette.
+Sources/provenance: art/figures/source and art/figures/RIGHTS.txt.
+Exports include a black silhouette inspection sheet and stable sole pivots.
 """
 from collections import deque
 from pathlib import Path
@@ -17,21 +18,14 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 
 def clean(source):
-    """Discard generated translucent matte and saturated edge artifacts.
-
-    The model's nominally transparent walk source has a white alpha-143 matte.
-    Alpha cutoff 210 separates that matte from real linen (alpha 240..254).
-    Keep only connected body pixels so stray one-pixel noise cannot shift pivots.
-    """
+    """Remove model matte and chroma key, retaining actual connected artwork."""
     im = source.convert("RGBA")
-    pixels = im.load()
-    w, h = im.size
     live = set()
-    for y in range(h):
-        for x in range(w):
-            r, g, b, a = pixels[x, y]
-            edge = (r > 170 and g < 65 and b < 90) or (g > 205 and r < 100 and b < 125)
-            if a >= 210 and not edge:
+    for y in range(im.height):
+        for x in range(im.width):
+            r, g, b, a = im.getpixel((x, y))
+            magenta = r > 145 and b > 125 and g < 115 and min(r, b) > g * 1.5
+            if a >= 210 and not magenta:
                 live.add((x, y))
     components = []
     while live:
@@ -51,12 +45,11 @@ def clean(source):
         raise ValueError("Empty sprite cell")
     biggest = max(map(len, components))
     result = Image.new("RGBA", im.size)
-    dst = result.load()
     for component in components:
-        if len(component) >= max(16, biggest // 100):
-            for x, y in component:
-                r, g, b, _ = pixels[x, y]
-                dst[x, y] = r, g, b, 255
+        if len(component) >= max(12, biggest // 150):
+            for point in component:
+                r, g, b, _ = im.getpixel(point)
+                result.putpixel(point, (r, g, b, 255))
     return result
 
 
@@ -67,104 +60,110 @@ def cells(file, cols, rows):
             for y in range(rows) for x in range(cols)]
 
 
-walk = cells("traveler-walk.webp", 4, 4)
-actions = cells("traveler-actions.webp", 4, 3)
-breakfast = cells("traveler-breakfast.webp", 4, 1)
-keeper = cells("keeper-work.webp", 4, 2)
-jelly_plum = cells("jelly-plum.webp", 4, 3)
-# A common RGB palette for every direction/frame prevents hue flickering.
-palette_source = Image.new("RGB", (1536, 1024), (30, 35, 38))
-for i, sprite in enumerate(walk + actions + breakfast + keeper + jelly_plum):
-    thumbnail = sprite.copy()
-    thumbnail.thumbnail((128, 128))
-    palette_source.paste(thumbnail, ((i % 12)*128, (i // 12)*128), thumbnail)
-palette = palette_source.quantize(colors=64, method=Image.Quantize.MEDIANCUT)
-
-# Madder-dyed cloak: preserve the source's hand-shaped value clusters. Replace
-# only the cloth ramp in traveler frames, not the earth, the innkeeper or jelly.
-cloth_dye = {
-    (32,53,52):(62,33,43), (45,71,69):(93,41,46), (62,83,83):(119,51,49),
-    (69,97,89):(148,61,49), (84,122,103):(180,77,54),
-    (106,141,119):(199,99,64), (112,153,125):(215,117,77),
-    (119,164,139):(232,140,94),
+sources = {
+    "traveler-walk": cells("traveler-short-walk.png", 4, 4),
+    "traveler-actions": cells("traveler-short-actions.png", 4, 4),
+    "traveler-combat": cells("traveler-combat.png", 4, 4),
+    "keeper-work": cells("keeper-short-work.png", 4, 2),
+    "copper-sentry": cells("copper-sentry.png", 4, 4),
+    "phosphor-moth": cells("phosphor-moth.png", 4, 4),
 }
-dyed_palette = [v for c in zip(*[iter(palette.getpalette())]*3) for v in cloth_dye.get(c, c)]
+jelly_plum = cells("jelly-plum.webp", 4, 3)
+sources["jelly"] = jelly_plum[:8]
+sources["plum"] = jelly_plum[8:9]
+
+# Quantize once, with all original material ramps, to prevent animation flicker.
+palette_source = Image.new("RGB", (1536, 1280), (32, 36, 43))
+for i, sprite in enumerate(s for group in sources.values() for s in group):
+    thumb = sprite.copy()
+    thumb.thumbnail((128, 128))
+    palette_source.paste(thumb, ((i % 12)*128, (i // 12)*128), thumb)
+palette = palette_source.quantize(colors=96, method=Image.Quantize.MEDIANCUT)
+
+metadata = {
+    "palette_colors": 96, "sampler": "nearest", "alpha": "binary",
+    "padding_below_feet": 2, "anatomy": "original short 2.5-3-head figures; uniform scale only",
+}
+atlases = {}
 
 
-def export(name, source, cols, rows, tile, body_pixels, scale_reference=None):
+def export(name, cols, rows, tile, body_pixels, row_names, reference_rows=None):
+    frames = sources[name]
     width, height = tile
-    # Crouches and hop squashes retain their actual height. Scale is shared
-    # over the whole animation; only boot/base baseline and horizontal center align.
-    reference = scale_reference or max(s.getbbox()[3]-s.getbbox()[1] for s in source)
-    scale = body_pixels / reference
+    reference = frames[:cols*reference_rows] if reference_rows else frames
+    body = max(s.getbbox()[3]-s.getbbox()[1] for s in reference)
+    # ONE uniform scale for the complete animation, including collapse frames.
+    extent = max(max(s.width/2-s.getbbox()[0], s.getbbox()[2]-s.width/2)*2 for s in frames)
+    scale = min(body_pixels / body, (width-8) / extent)
     atlas = Image.new("RGBA", (cols*width, rows*height))
-    for i, sprite in enumerate(source):
-        bounds = sprite.getbbox()
-        sprite = sprite.crop(bounds)
-        size = max(1, round(sprite.width*scale)), max(1, round(sprite.height*scale))
-        sprite = sprite.resize(size, Image.Resampling.LANCZOS)
-        alpha = sprite.getchannel("A").point(lambda a: 255 if a >= 150 else 0)
-        indexed = sprite.convert("RGB").quantize(palette=palette, dither=Image.Dither.NONE)
-        if name is None or name == "traveler-walk":
-            indexed.putpalette(dyed_palette)
-        rgb = indexed.convert("RGB")
-        sprite = rgb.convert("RGBA")
+    for i, source in enumerate(frames):
+        bounds = source.getbbox()
+        sprite = source.crop(bounds)
+        sprite = sprite.resize((max(1, round(sprite.width*scale)),
+                                max(1, round(sprite.height*scale))), Image.Resampling.LANCZOS)
+        alpha = sprite.getchannel("A").point(lambda a: 255 if a >= 145 else 0)
+        sprite = sprite.convert("RGB").quantize(palette=palette, dither=Image.Dither.NONE).convert("RGBA")
         sprite.putalpha(alpha)
-        if sprite.width > width-4 or sprite.height > height-4:
-            raise ValueError(f"{name} frame {i} exceeds its cell: {sprite.size}")
-        # Two transparent rows below soles, shared by every action.
-        x = (width-sprite.width)//2 + (i % cols)*width
+        # Preserve the source's body/boot center, not the changing weapon/wing bounds.
+        x = width//2 + round((bounds[0]-source.width/2)*scale) + (i % cols)*width
         y = height-2-sprite.height + (i // cols)*height
         atlas.alpha_composite(sprite, (x, y))
-    if name is not None:
-        atlas.save(OUT / f"{name}.png", optimize=True)
-    return atlas
+    atlas.save(OUT / f"{name}.png", optimize=True)
+    atlases[name] = atlas
+    metadata[name] = {"tile": list(tile), "grid": [cols, rows], "rows": row_names,
+                      "foot": [width//2, height-2], "body_pixels": body_pixels}
 
 
-atlases = {}
-atlases["traveler-walk"] = export("traveler-walk", walk, 4, 4, (96, 128), 108)
-action_strip = export(None, actions, 4, 3, (96, 128), 108)
-breakfast_strip = export(None, breakfast, 4, 1, (96, 128), 108)
-atlases["traveler-actions"] = Image.new("RGBA", (384, 512))
-atlases["traveler-actions"].paste(action_strip, (0, 0))
-atlases["traveler-actions"].paste(breakfast_strip, (0, 384))
-atlases["traveler-actions"].save(OUT / "traveler-actions.png", optimize=True)
-atlases["keeper-work"] = export("keeper-work", keeper, 4, 2, (96, 128), 108)
-atlases["jelly"] = export("jelly", jelly_plum[:8], 4, 2, (96, 96), 78)
-atlases["plum"] = export("plum", jelly_plum[8:9], 1, 1, (32, 32), 25)
+export("traveler-walk", 4, 4, (160,128), 108, ["south","west","north","east"])
+export("traveler-actions", 4, 4, (160,128), 108, ["gather","shake","throw","eat"])
+export("traveler-combat", 4, 4, (160,128), 108, ["strike","brace","hurt/down","drink"], 2)
+export("keeper-work", 4, 2, (160,128), 108, ["stir","knead"])
+export("copper-sentry", 4, 4, (128,128), 108, ["idle","prepare","strike","down"], 1)
+export("phosphor-moth", 4, 4, (128,128), 94, ["idle","prepare","dive","down"], 1)
+export("jelly", 4, 2, (96,96), 78, ["hop","swallow"])
+export("plum", 1, 1, (32,32), 25, ["plum"])
 
-# Small grounding shadow, separate from the sun-cast upright silhouette.
-contact_shadow = Image.new("RGBA", (64, 64))
+# Portrait uses the newly drawn large head, never the obsolete long figure.
+front = sources["traveler-walk"][1]
+box = front.getbbox()
+portrait = front.crop((box[0], box[1], box[2], box[1]+round((box[3]-box[1])*.60)))
+portrait.thumbnail((104,104), Image.Resampling.LANCZOS)
+portrait_card = Image.new("RGBA", (128,128))
+portrait_card.alpha_composite(portrait, ((128-portrait.width)//2, (128-portrait.height)//2))
+portrait_card.save(OUT / "traveler-portrait.png")
+
+shadow = Image.new("RGBA", (64,64))
 for y in range(64):
     for x in range(64):
-        radius = (((x-31.5)**2+(y-31.5)**2)**0.5)/31.5
-        alpha = round(100*max(0.0, 1.0-radius)**1.4)
-        contact_shadow.putpixel((x,y), (15,20,21,alpha))
-contact_shadow.save(OUT / "contact-shadow.png", optimize=True)
+        radius = (((x-31.5)**2+(y-31.5)**2)**.5)/31.5
+        shadow.putpixel((x,y), (15,20,21,round(105*max(0.,1.-radius)**1.4)))
+shadow.save(OUT / "contact-shadow.png", optimize=True)
 
-# Contact sheet is an art inspection artifact, not a claimed in-engine screenshot.
-contact = Image.new("RGB", (816, 930), (49, 57, 62))
+# Every row is shown at native pixels, plus black-on-linen silhouette evidence.
+contact = Image.new("RGB", (1312, 2216), (43,49,54))
+silhouettes = Image.new("RGB", contact.size, (215,208,184))
 draw = ImageDraw.Draw(contact)
-placements = [("traveler-walk", 8, 24), ("traveler-actions", 416, 24),
-              ("keeper-work", 416, 568), ("jelly", 8, 580), ("plum", 416, 852)]
-for name, x, y in placements:
-    draw.text((x, y-16), name, fill=(244, 231, 207))
+sil = ImageDraw.Draw(silhouettes)
+for i, name in enumerate(atlases):
+    x = (i % 2)*656 + 8
+    y = (i // 2)*552 + 24
     atlas = atlases[name]
-    contact.paste(atlas, (x, y), atlas)
+    draw.text((x,y-18), name, fill=(234,219,190))
+    sil.text((x,y-18), name, fill=(30,35,37))
+    contact.paste(atlas, (x,y), atlas)
+    black = Image.new("RGBA", atlas.size, (25,30,32,255))
+    black.putalpha(atlas.getchannel("A"))
+    silhouettes.paste(black, (x,y), black)
+    tile = metadata[name]["tile"]
+    cols, rows = metadata[name]["grid"]
+    for row in range(rows):
+        for col in range(cols):
+            px, py = x+col*tile[0]+tile[0]//2, y+(row+1)*tile[1]-2
+            draw.line((px-3,py,px+3,py), fill=(236,100,81))
+            sil.line((px-3,py,px+3,py), fill=(167,66,47))
 contact.save(ART / "contact-sheet.png")
-
-sample = Image.new("RGB", (480, 160), (49, 57, 62))
-for column, index in enumerate((0, 4, 8, 12)):
-    sample.paste(atlases["traveler-walk"].crop((0, (index//4)*128, 96, (index//4+1)*128)),
-                 (column*120+12, 16), atlases["traveler-walk"].crop((0, (index//4)*128, 96, (index//4+1)*128)))
-sample.resize((960, 320), Image.Resampling.NEAREST).save(ART / "traveler-sample.png")
-metadata = {
-    "palette_colors": 64, "sampler": "nearest", "alpha": "binary", "padding_below_feet": 2,
-    "traveler-walk": {"tile": [96,128], "grid": [4,4], "rows": ["south","west","north","east"], "foot": [48,126], "body_pixels":108},
-    "traveler-actions": {"tile":[96,128], "grid":[4,4], "rows":["gather","shake","throw","eat"], "foot":[48,126], "body_pixels":108},
-    "keeper-work": {"tile":[96,128], "grid":[4,2], "rows":["stir","knead"], "foot":[48,126], "body_pixels":108},
-    "jelly": {"tile":[96,96], "grid":[4,2], "rows":["hop","swallow"], "foot":[48,94], "body_pixels":78},
-    "plum": {"tile":[32,32], "grid":[1,1], "foot":[16,30], "body_pixels":25},
-}
+silhouettes.save(ART / "silhouette-check.png")
+sample = atlases["traveler-walk"].crop((0,0,640,128))
+sample.resize((1280,256), Image.Resampling.NEAREST).save(ART / "traveler-sample.png")
 (ART / "atlas-layout.json").write_text(json.dumps(metadata, indent=2)+"\n")
-print("Exported five offline atlases, common 64-color palette, binary alpha; art/figures/contact-sheet.png")
+print("Exported eight original action atlases, portrait, stable sole pivots and silhouette-check.png")

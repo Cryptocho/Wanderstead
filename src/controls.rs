@@ -1,18 +1,35 @@
-use crate::{Frame, game::*};
+use crate::{Frame, game::*, tileview::HoverTile};
 use bevy::{prelude::*, window::PrimaryWindow};
 
 pub struct ControlsPlugin;
+
+/// Hover sampling is ordered between keyboard navigation and pointer dispatch.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ControlsSet {
+    Keys,
+    Pointer,
+}
+
 impl Plugin for ControlsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (keys, pointer).in_set(Frame::Input))
-            .add_systems(Update, actions.in_set(Frame::Act));
+        app.configure_sets(
+            Update,
+            (ControlsSet::Keys, ControlsSet::Pointer)
+                .chain()
+                .in_set(Frame::Input),
+        )
+        .add_systems(Update, keys.in_set(ControlsSet::Keys))
+        .add_systems(Update, pointer.in_set(ControlsSet::Pointer))
+        .add_systems(Update, actions.in_set(Frame::Act));
     }
 }
+
 #[derive(Default)]
 struct Held {
     dir: IVec2,
     next: f64,
 }
+
 fn keys(
     k: Res<ButtonInput<KeyCode>>,
     t: Res<Time<Real>>,
@@ -36,6 +53,9 @@ fn keys(
         (Tab, Intent::Book),
         (KeyV, Intent::Look),
         (KeyT, Intent::Toss),
+        (KeyQ, Intent::Brace),
+        (KeyF, Intent::Skill),
+        (KeyR, Intent::Drink),
         (Space, Intent::Wait),
         (KeyE, Intent::Interact),
         (Enter, Intent::Interact),
@@ -68,8 +88,8 @@ fn keys(
     if command.is_none() && d != IVec2::ZERO && (fresh || held.dir != d || now >= held.next) {
         held.next = now + if fresh || held.dir != d { 0.29 } else { 0.145 };
         command = match (ui.page, d.x) {
-            (Page::Bowl | Page::Book, -1) => Some(Intent::Less),
-            (Page::Bowl | Page::Book, 1) => Some(Intent::More),
+            (Page::Bowl | Page::Book | Page::Gear, -1) => Some(Intent::Less),
+            (Page::Bowl | Page::Book | Page::Gear, 1) => Some(Intent::More),
             _ => Some(Intent::Dir(d)),
         };
     }
@@ -78,41 +98,48 @@ fn keys(
         intents.write(i);
     }
 }
+
 fn pointer(
     buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    hover: Res<HoverTile>,
     window: Single<&Window, With<PrimaryWindow>>,
-    camera: Single<(&Camera, &GlobalTransform), With<Camera3d>>,
     ui: Res<Interface>,
+    outing: Res<Outing>,
     mut out: EventWriter<Intent>,
 ) {
+    if buttons.just_pressed(MouseButton::Right) {
+        out.write(Intent::Cancel);
+        return;
+    }
     if !buttons.just_pressed(MouseButton::Left)
         || !matches!(ui.page, Page::Roam | Page::Aim | Page::Look)
+        || keys.get_just_pressed().next().is_some()
     {
         return;
     }
     let Some(pos) = window.cursor_position() else {
         return;
     };
-    if crate::book::pointer_over_book(pos, window.resolution.size(), ui.page, ui.hud) {
+    if crate::book::pointer_over_book(pos, window.resolution.size(), ui.page, ui.hud, outing.area) {
         return;
     }
-    let Ok(ray) = camera.0.viewport_to_world(camera.1, pos) else {
-        return;
-    };
-    if ray.direction.y >= -0.005 {
-        return;
-    }
-    let p = ray.origin + *ray.direction * (-ray.origin.y / ray.direction.y);
-    let cell = IVec2::new(p.x.round() as i32, p.z.round() as i32);
-    if on_map(cell) {
+    if let Some(cell) = hover.cell {
         out.write(Intent::Point(cell));
     }
 }
+
 #[derive(Default)]
 struct WalkTo {
     dest: Option<IVec2>,
+    path: Vec<IVec2>,
     next: f64,
+    single_step: bool,
+    confirmed_hazard: bool,
+    interaction: bool,
+    area: Option<crate::map::Area>,
 }
+
 fn actions(
     mut list: EventReader<Intent>,
     mut g: ResMut<Outing>,
@@ -121,39 +148,79 @@ fn actions(
     t: Res<Time<Real>>,
     journal: Res<JournalFile>,
 ) {
-    let before = g.history.len();
+    let revision = g.save_revision;
     let now = t.elapsed_secs_f64();
+    let mut acted = false;
     for &i in list.read() {
         route.dest = None;
-        if let Intent::Point(p) = i
-            && ui.page == Page::Roam
-            && !g.adjacent_object(p)
-        {
-            route.dest = Some(p);
-            route.next = now;
+        if acted {
             continue;
         }
+        if let Intent::Point(p) = i {
+            if ui.page == Page::Roam && !g.adjacent_object(p) {
+                if g.path_to(p, &mut route.path) && !route.path.is_empty() {
+                    route.dest = Some(p);
+                    route.single_step = g.threatened();
+                    route.confirmed_hazard = route.path.len() == 1;
+                    route.interaction = g.is_interactable(p);
+                    route.area = Some(g.area);
+                    route.next = now;
+                }
+                continue;
+            }
+            if matches!(ui.page, Page::Aim | Page::Look) {
+                // The hovered cell is already selected: one click confirms it.
+                ui.cursor = p;
+                g.act(&mut ui, Intent::Interact);
+                acted = true;
+                continue;
+            }
+        }
         g.act(&mut ui, i);
+        acted = true;
     }
-    if let Some(target) = route.dest
+    if !acted
+        && let Some(target) = route.dest
         && now >= route.next
     {
-        if ui.page == Page::Roam
-            && let Some(d) = g.route(target)
+        if ui.page != Page::Roam
+            || route.area != Some(g.area)
+            || (route.interaction && !g.is_interactable(target))
+            || !g.path_to(target, &mut route.path)
         {
+            route.dest = None;
+        } else if route.path.is_empty() {
+            route.dest = None;
+            if g.adjacent_object(target) {
+                g.act(&mut ui, Intent::Point(target));
+            }
+        } else if !route.single_step
+            && (g.threatened() || (g.danger_at(route.path[0]) && !route.confirmed_hazard))
+        {
+            route.dest = None;
+        } else {
+            let previous = g.player;
+            let area = g.area;
+            let hp = g.expedition.hp;
+            let d = route.path[0] - previous;
             g.act(&mut ui, Intent::Dir(d));
-            route.next = now + 0.15;
-            if g.player == target || g.adjacent_object(target) {
+            route.next = now + 0.29;
+            if route.single_step
+                || g.area != area
+                || g.expedition.hp < hp
+                || g.player != previous + d
+                || g.action != ActionKind::Step
+                || ui.page != Page::Roam
+                || g.threatened()
+            {
                 route.dest = None;
             }
-        } else {
-            route.dest = None;
         }
     }
-    if g.history.len() != before
-        && let Err(e) = journal.save(&g.history)
+    if g.save_revision != revision
+        && let Err(e) = journal.save(&g)
     {
         error!("写入旅行手记失败：{e}");
-        g.notice = "手记没能存到磁盘，这次早餐仍在当前书页里。";
+        g.notice = "手记没能存到磁盘，当前旅程仍然保留。";
     }
 }

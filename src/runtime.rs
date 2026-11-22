@@ -3,6 +3,7 @@ use crate::{
     game::{Interface, Outing},
     lens::LensState,
     stage::PaletteState,
+    tileview::HoverTile,
 };
 use bevy::{
     input::{
@@ -40,7 +41,7 @@ impl Options {
             match arg.to_str() {
                 Some("--help" | "-h") => {
                     println!(
-                        "旅店外的李子 · Wanderstead\n  cargo run --locked [-- --fps auto|100|50] [-- --fresh]\n  --fresh     从第一天开始，不读写手记\n  --qa PATH   启用本地开发用 Unix datagram 接口\n  操作：WASD/方向键移动，E 互动，T 抛李子，V 察看，J 手记，滚轮或 +/- 变焦，F12 截图，Ctrl+Q 退出。"
+                        "铜壶镇 · 第一股泉水\n  cargo run --locked -- [--fps auto|100|50] [--fresh]\n  --fresh     从第一天开始，不读写手记\n  --qa PATH   启用本地桌面测试接口\n  左键点格走路、调查、交战；Q 守势，F 技艺，R 喝药，J 手记。滚轮或 +/- 变焦，Home 复位，F12 截图，Ctrl+Q 退出。"
                     );
                     return Ok(None);
                 }
@@ -216,6 +217,10 @@ fn key(s: &str) -> Option<KeyCode> {
         "left" => ArrowLeft,
         "right" => ArrowRight,
         "e" => KeyE,
+        "q" => KeyQ,
+        "f" => KeyF,
+        "r" => KeyR,
+        "n" => KeyN,
         "t" => KeyT,
         "v" => KeyV,
         "j" => KeyJ,
@@ -231,6 +236,7 @@ fn key(s: &str) -> Option<KeyCode> {
         "minus" => Minus,
         "home" => Home,
         "f7" => F7,
+        "f10" => F10,
         "f12" => F12,
         _ => return None,
     })
@@ -251,6 +257,9 @@ fn wire(
     ui: Res<Interface>,
     lens: Res<LensState>,
     palette: Res<PaletteState>,
+    camera: Single<(&Camera, &GlobalTransform), With<Camera3d>>,
+    hover: Res<HoverTile>,
+    passes: Res<bevy::diagnostic::DiagnosticsStore>,
     mut pace: ResMut<Pace>,
     mut keyboard: EventWriter<KeyboardInput>,
     mut mouse: EventWriter<MouseButtonInput>,
@@ -277,6 +286,50 @@ fn wire(
     let reply = match words.next() {
         Some("state") => {
             json!({"day":game.day,"turn":game.turn,"player":game.player.to_array(),"facing":game.facing.to_array(),"jelly":game.jelly.to_array(),"target":game.target.map(|p|p.to_array()),"fruit":game.fruit.iter().map(|p|p.to_array()).collect::<Vec<_>>(),"bag":game.plums,"eaten":game.eaten,"shaken":game.tree_shaken,"meal":game.breakfast,"last":format!("{:?}",game.action),"history":game.history,"page":format!("{:?}",ui.page),"cursor":ui.cursor.to_array(),"hud":ui.hud,"filling":ui.filling,"notice":game.notice,"lens":{"zoom":lens.zoom,"pitch":lens.pitch_deg,"distance":lens.distance},"ink":palette.enabled,"window":[win.physical_width(),win.physical_height()],"present":format!("{:?}",win.present_mode),"native":raw.map(|r|format!("{:?}",r.get_window_handle())).and_then(|s|s.split(['(',' ']).next().map(str::to_owned)),"focus":win.focused,"fps_target":pace.hz})
+        }
+        Some("expedition") => {
+            let e = &game.expedition;
+            json!({"area":format!("{:?}",game.area),"hp":e.hp,"max_hp":e.max_hp,"tonics":e.tonics,"kit":format!("{:?}",e.kit),"quest":format!("{:?}",e.quest),
+                "beat":e.beat,"attempts":e.attempts,"kills":e.kills,"deaths":e.deaths,"retreats":e.retreats,"coins":e.loot,"banked":e.banked,"ready":e.skill_ready,
+                "chest":e.seal_open,"remedy":e.tonic_open,"enemies":e.enemies.iter().map(|a|json!([a.id,format!("{:?}",a.kind),a.pos.to_array(),a.hp,a.warn.map(|p|p.to_array())])).collect::<Vec<_>>(),
+                "hover":hover.cell.map(|p|p.to_array()),"path":hover.path.iter().map(|p|p.to_array()).collect::<Vec<_>>()})
+        }
+        Some("pick") => {
+            let point = words
+                .next()
+                .and_then(|v| v.parse::<f32>().ok())
+                .zip(words.next().and_then(|v| v.parse::<f32>().ok()))
+                .map(|(x, y)| Vec2::new(x, y));
+            let cell = point
+                .filter(|&p| {
+                    !crate::book::pointer_over_book(
+                        p,
+                        win.resolution.size(),
+                        ui.page,
+                        ui.hud,
+                        game.area,
+                    )
+                })
+                .and_then(|p| camera.0.viewport_to_world(camera.1, p).ok())
+                .and_then(|ray| crate::tileview::pick_cell(&game, ray, camera.1));
+            json!(cell.map(|p| p.to_array()))
+        }
+        Some("project") => {
+            let x = words.next().and_then(|v| v.parse::<f32>().ok());
+            let z = words.next().and_then(|v| v.parse::<f32>().ok());
+            let y = words
+                .next()
+                .and_then(|v| v.parse::<f32>().ok())
+                .unwrap_or(0.);
+            match x.zip(z).and_then(|(x, z)| {
+                camera
+                    .0
+                    .world_to_viewport(camera.1, Vec3::new(x, y, z))
+                    .ok()
+            }) {
+                Some(p) => json!(p.to_array()),
+                None => json!({"error":"project X Z [Y] must be in front of the camera"}),
+            }
         }
         Some("key") => {
             if let (Some(k), Some(state)) = (words.next().and_then(key), button(words.next())) {
@@ -316,7 +369,8 @@ fn wire(
                 words.next().and_then(|s| s.parse().ok()),
             ) {
                 // Feed Bevy UI hit testing without requesting a Wayland pointer warp.
-                win.bypass_change_detection().set_cursor_position(Some(Vec2::new(x, y)));
+                win.bypass_change_detection()
+                    .set_cursor_position(Some(Vec2::new(x, y)));
                 json!(true)
             } else {
                 json!({"error":"pointer X Y"})
@@ -340,6 +394,13 @@ fn wire(
             pace.measuring = true;
             json!({"collecting":600})
         }
+        Some("passes") => json!(
+            passes
+                .iter()
+                .filter(|d| d.path().as_str().ends_with("elapsed_gpu"))
+                .filter_map(|d| d.average().map(|v| (d.path().as_str(), v)))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        ),
         Some("stats") => {
             let mut a = pace.samples.clone();
             a.sort_by(f32::total_cmp);
@@ -373,7 +434,9 @@ fn wire(
             quit.write(AppExit::Success);
             json!(true)
         }
-        _ => json!({"error":"state/key/scroll/pointer/mouse/measure/stats/capture/exit"}),
+        _ => {
+            json!({"error":"state/expedition/project/key/scroll/pointer/mouse/measure/stats/capture/exit"})
+        }
     };
     let _ = wire.sock.send_to(reply.to_string().as_bytes(), peer);
 }

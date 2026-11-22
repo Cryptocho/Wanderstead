@@ -15,8 +15,23 @@ struct PaletteUniform {
     settings: vec4<f32>,
     focus: vec4<f32>,
     eye: vec4<f32>,
+    floor_style: vec4<f32>,
 }
 @group(2) @binding(100) var<uniform> palette: PaletteUniform;
+@group(2) @binding(101) var site_edges:texture_2d<f32>;
+
+fn edge_distance(bits:u32, f:vec2<f32>)->f32 {
+    var d=2.;
+    if (bits & 1u)!=0u {d=min(d,f.x);}
+    if (bits & 2u)!=0u {d=min(d,1.-f.x);}
+    if (bits & 4u)!=0u {d=min(d,f.y);}
+    if (bits & 8u)!=0u {d=min(d,1.-f.y);}
+    return d;
+}
+fn stone_grain(p:vec2<f32>)->f32 {
+    let q=fract(vec3<f32>(p.xyx)*vec3<f32>(.1031,.11369,.13787));
+    return fract((q.x+q.y)*(q.z+dot(q,q.yzx+19.19)));
+}
 
 fn ordered_threshold(cell: vec2<i32>) -> f32 {
     let bayer = array<f32, 16>(
@@ -32,8 +47,22 @@ fn ordered_threshold(cell: vec2<i32>) -> f32 {
 
 @fragment
 fn fragment(vertex: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
-    var surface = vertex;
     let enabled = palette.settings.x > 0.5;
+    // A material pixel has a size in the world, not in the window. The UV
+    // Jacobian converts a displacement on the dominant face into atlas space.
+    // This also works for rotated bevels and for atlases of different density.
+    let geometric = abs(normalize(vertex.world_normal));
+    var chart = vertex.world_position.xz;
+    if geometric.z >= geometric.y && geometric.z > geometric.x { chart = vertex.world_position.xy; }
+    else if geometric.x > geometric.y { chart = vertex.world_position.zy; }
+    let pitch = 1.0 / max(palette.settings.y, 1.0);
+    let sx = dpdx(chart);
+    let sy = dpdy(chart);
+#ifdef VERTEX_UVS_A
+    let ux = dpdx(vertex.uv);
+    let uy = dpdy(vertex.uv);
+    let det = sx.x * sy.y - sx.y * sy.x;
+#endif
     // View-local foreground cutaway is independent of the F7 palette switch.
     // The original geometry still casts real shadows. Ground, people and the
     // breakfast props never enter this branch.
@@ -53,18 +82,59 @@ fn fragment(vertex: VertexOutput, @builtin(front_facing) is_front: bool) -> Frag
             if radius < edge { discard; }
         }
     }
-    if enabled {
-        // Texel centres are in the original UV domain, independent of the camera.
-        // Keep all original material texture bindings, including roughness/normal.
-#ifdef VERTEX_UVS_A
-        if (pbr_bindings::material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_BASE_COLOR_TEXTURE_BIT) != 0u {
-            let dimensions = vec2<f32>(textureDimensions(pbr_bindings::base_color_texture));
-            surface.uv = (floor(surface.uv * dimensions) + vec2<f32>(0.5)) / dimensions;
-        }
-#endif
-    }
-    var pbr = pbr_input_from_standard_material(surface, is_front);
+    var pbr = pbr_input_from_standard_material(vertex, is_front);
     pbr.material.base_color = alpha_discard(pbr.material, pbr.material.base_color);
+#ifdef VERTEX_UVS_A
+    if enabled && abs(det) > 0.00000001 &&
+        (pbr_bindings::material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_BASE_COLOR_TEXTURE_BIT) != 0u {
+        let projected = max(length(sx), length(sy)) / pitch;
+        if projected < 1.1 {
+            // Box-filter each virtual texel. A nearest sample of a 512px relief
+            // reduced to a 48px block aliases its mortar and reads as salt noise.
+            let du = (ux*sy.y - uy*sx.y) * (pitch/det);
+            let dv = (uy*sx.x - ux*sy.x) * (pitch/det);
+            let shift = vec2<f32>(0.5) - fract(chart/pitch);
+            let middle = vertex.uv + du*shift.x + dv*shift.y;
+            let a = .24*(du+dv);
+            let b = .24*(du-dv);
+            let filtered = .25*(
+                textureSampleLevel(pbr_bindings::base_color_texture,pbr_bindings::base_color_sampler,middle+a,0.).rgb+
+                textureSampleLevel(pbr_bindings::base_color_texture,pbr_bindings::base_color_sampler,middle-a,0.).rgb+
+                textureSampleLevel(pbr_bindings::base_color_texture,pbr_bindings::base_color_sampler,middle+b,0.).rgb+
+                textureSampleLevel(pbr_bindings::base_color_texture,pbr_bindings::base_color_sampler,middle-b,0.).rgb);
+            var factor=pbr_bindings::material.base_color.rgb;
+#ifdef VERTEX_COLORS
+            factor *= vertex.color.rgb;
+#endif
+            let coverage=.86*(1.-smoothstep(.60,1.1,projected));
+            pbr.material.base_color = vec4<f32>(mix(pbr.material.base_color.rgb,filtered*factor,coverage),pbr.material.base_color.a);
+            pbr.N = normalize(mix(pbr.N,normalize(pbr.world_normal), .34*coverage));
+        }
+    }
+#endif
+    if enabled && palette.floor_style.x>.5 && geometric.y>.76 && abs(vertex.world_position.y)<.16 {
+        let s=(floor(vertex.world_position.xz/pitch)+.5)*pitch;
+        let tile=vec2<i32>(floor(s+.5));
+        let f=fract(s+.5);
+        let dims=vec2<i32>(textureDimensions(site_edges));let size=vec2<i32>(dims.x,dims.y/2);
+        var addr=tile+size/2;
+        if all(addr>=vec2<i32>(0)) && all(addr<size) {
+            addr.y+=select(0,size.y,palette.floor_style.x>1.5);
+            let banks=vec3<u32>(round(textureLoad(site_edges,addr,0).rgb*255.));
+            let granite=stone_grain(vec2<f32>(tile));
+            let fleck=stone_grain(floor(s*6.3))*.65+stone_grain(floor(s*19.1))*.35;
+            let foot=1.-smoothstep(.01,.57,edge_distance(banks.r,f));
+            let wet_bank=min(edge_distance(banks.g,f),select(2.,edge_distance(banks.b,f),palette.floor_style.y>.5));
+            let damp=(1.-smoothstep(.055,.97,wet_bank))*(.64+.36*fleck);
+            let seam=min(min(f.x,1.-f.x),min(f.y,1.-f.y));
+            let moss=(1.-smoothstep(.01,.105,seam))*smoothstep(.38,.82,fleck)*(.13+.52*foot);
+            let flags=pbr.material.base_color.rgb*mix(vec3<f32>(.86,.91,1.01),vec3<f32>(1.10,1.01,.91),granite);
+            let roots=flags*vec3<f32>(.52,.80,.42);
+            pbr.material.base_color=vec4<f32>(mix(flags,roots,moss)*(1.-damp*.26),pbr.material.base_color.a);
+            pbr.material.perceptual_roughness=mix(pbr.material.perceptual_roughness,.30,damp);
+            pbr.diffuse_occlusion *= 1.-.46*foot;
+        }
+    }
     var out: FragmentOutput;
     if (pbr.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT) != 0u {
         out.color = pbr.material.base_color;
@@ -83,14 +153,7 @@ fn fragment(vertex: VertexOutput, @builtin(front_facing) is_front: bool) -> Frag
             let weights = vec3<f32>(0.2126, 0.7152, 0.0722);
             let luminance = max(dot(out.color.rgb, weights), 0.00001);
             let albedo = max(dot(pbr.material.base_color.rgb, weights), 0.02);
-            let normal = abs(pbr.world_normal);
-            var plane = vertex.world_position.xz;
-            if normal.z > normal.y && normal.z >= normal.x {
-                plane = vertex.world_position.xy;
-            } else if normal.x > normal.y && normal.x > normal.z {
-                plane = vertex.world_position.yz;
-            }
-            let cell = vec2<i32>(floor(plane * max(palette.settings.y, 1.0)));
+            let cell = vec2<i32>(floor(chart / pitch));
             let threshold = ordered_threshold(cell) * palette.settings.w;
             let steps = max(palette.settings.z, 1.0);
             // Log illumination bands preserve HDR range at any physical exposure.
@@ -100,7 +163,11 @@ fn fragment(vertex: VertexOutput, @builtin(front_facing) is_front: bool) -> Frag
             let band = floor(illumination * steps + 0.5 + threshold) / steps;
             let amount = 0.68 * (1.0 - 0.8 * pbr.material.metallic);
             let band_luminance = albedo * exp2(mix(illumination, band, amount));
-            out.color = vec4<f32>(out.color.rgb * (band_luminance / luminance), out.color.a);
+            // Cool only the ink in the darkest recesses; keep colored lamps,
+            // metal glints, and the real albedo instead of tinting the whole frame.
+            let recess = (1.0 - smoothstep(0.045, 0.24, luminance)) * (1.0 - pbr.material.metallic);
+            let ink = mix(vec3<f32>(1.0), vec3<f32>(0.87, 0.94, 1.055), recess);
+            out.color = vec4<f32>(out.color.rgb * (band_luminance / luminance) * ink, out.color.a);
         }
     }
     return FragmentOutput(main_pass_post_lighting_processing(pbr, out.color));

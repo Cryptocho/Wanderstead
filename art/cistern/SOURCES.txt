@@ -1,0 +1,18 @@
+Wanderstead / Copper Kettle — original cistern art
+
+Sources
+- Geometry, UV layouts, physical architecture, sculptures/ornaments, foliage, coffers, handwheel and pressure lids: original procedural mesh artwork authored for this project in tools/make_cistern.py; Blender 4.5.5 LTS (bpy).
+- source/spring_material_atlas.png: original image generated for this project by OpenAI gpt-image-2 on 2026-11-22. Four commissioned material quadrants: worn limestone paving, wet Roman masonry, spring goddess bas-relief, crimson-and-gold spring banner.
+- source/ornament_material_atlas.png: original image generated for this project by OpenAI gpt-image-2 on 2026-11-22. Four commissioned quadrants: Roman water mosaic, bronze pressure vent, walnut panels, acanthus carving.
+- tools/make_cistern_textures.py crops original quadrants and derives genuine tangent normals and roughness maps. assets/cistern/*.png are those processed originals, embedded into cistern.glb.
+- User's ruin.png and reference/visual/spring-cistern-study.webp were inspected as visual direction only. No pixels from those references are included in the textures or rendered background.
+
+Rights
+All original procedural code and original mesh artwork in this package are made available to the project under CC0-1.0. Generated image outputs are supplied for this project under OpenAI's output terms (https://openai.com/policies/terms-of-use/); no third-party game assets, scraped imagery, purchased material scans or attribution-required textures were used. Generated image outputs are not represented as externally licensed public-domain stock.
+
+Regeneration
+python tools/make_cistern_textures.py
+blender-4.5 --factory-startup --background -t 4 --python tools/make_cistern.py
+
+Integration
+Authoritative collision and placement source: assets/maps/cistern.grid, 21x15, world x=-10..10, z=-7..7. Tile top y=0; one cell=one metre. Origin is unchanged. Dynamic water belongs to the engine at y=-0.22. No preview lights/camera or water surface are exported. The three independently animated roots are tool_lid, tonic_lid (local X rotation -1.7 opens), and wheel_pickup (hide root and descendants when acquired). Exact geometry and lighting recommendations: integration.json. Engine effects anchors: assets/cistern/lights.json. The editable cistern.blend includes the actual north-facing preview rig and physical lights; PNGs are real 3D renders, without a composited backdrop.
